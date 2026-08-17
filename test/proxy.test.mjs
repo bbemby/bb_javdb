@@ -748,19 +748,45 @@ test("embeds a directly streamable media source in movie details", async () => {
     {},
     {},
     async (url) => {
-      assert.match(url, /\/v4\/movies\/42/);
+      if (url.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: {
+              movie: {
+                id: 42,
+                number: "TEST-001",
+                title: "Test Movie",
+                can_play: true,
+                has_cnsub: true,
+              },
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (url.includes("/api/v/resolve")) {
+        return new Response(
+          JSON.stringify({
+            variants: [{
+              variant: "original",
+              sourceUrl: "https://fast-stream.jav.si/video/test.mp4",
+              sourceType: "video/mp4",
+              quality: 1080,
+            }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      assert.match(url, /\/api\/subtitle\?name=TEST-001/);
       return new Response(
         JSON.stringify({
-          success: 1,
-          data: {
-            movie: {
-              id: 42,
-              number: "TEST-001",
-              title: "Test Movie",
-              can_play: true,
-              has_cnsub: true,
-            },
-          },
+          code: 0,
+          data: [{
+            cid: "subtitle-1",
+            url: "https://subtitle.example/test.srt",
+            ext: "srt",
+          }],
         }),
         { headers: { "content-type": "application/json" } },
       );
@@ -773,6 +799,66 @@ test("embeds a directly streamable media source in movie details", async () => {
   assert.match(payload.Path, /\/Videos\/42\/stream\.mp4/);
   assert.equal(payload.MediaSources[0].MediaStreams[1].Type, "Audio");
   assert.equal(payload.MediaSources[0].DefaultSubtitleStreamIndex, 2);
+});
+
+test("serves inline HLS variants through a short Emby stream URL", async () => {
+  const playlist = "#EXTM3U\n#EXT-X-TARGETDURATION:10\n#EXTINF:10,\nhttps://media.example/segment.ts\n#EXT-X-ENDLIST\n";
+  const inlineSource = `data:application/vnd.apple.mpegurl,${encodeURIComponent(playlist)}`;
+  const fetchImpl = async (url) => {
+    const target = String(url);
+    if (target.includes("/v4/movies/42")) {
+      return new Response(
+        JSON.stringify({
+          success: 1,
+          data: { movie: { id: 42, number: "TEST-001", title: "HLS Movie" } },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (target.includes("/api/v/resolve")) {
+      return new Response(
+        JSON.stringify({
+          variants: [{
+            variant: "javgg_original",
+            sourceUrl: inlineSource,
+            sourceType: "application/vnd.apple.mpegurl",
+          }],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    if (target.includes("/api/subtitle")) {
+      return new Response(
+        JSON.stringify({ code: 0, data: [] }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
+    throw new Error(`unexpected fetch: ${target}`);
+  };
+
+  const playback = await handleProxy(
+    new Request("https://clone.example/emby/Items/42/PlaybackInfo?api_key=bbjavdb-guest", {
+      method: "POST",
+    }),
+    {},
+    {},
+    fetchImpl,
+  );
+  const mediaSource = (await playback.json()).MediaSources[0];
+  assert.equal(mediaSource.Container, "m3u8");
+  assert.match(mediaSource.DirectStreamUrl, /\/emby\/Videos\/42\/stream\.m3u8/);
+  assert.doesNotMatch(mediaSource.DirectStreamUrl, /source=/);
+  assert.ok(mediaSource.DirectStreamUrl.length < 200);
+
+  const stream = await handleProxy(
+    new Request(new URL(mediaSource.DirectStreamUrl, "https://clone.example")),
+    {},
+    {},
+    fetchImpl,
+  );
+  assert.equal(stream.status, 200);
+  assert.match(stream.headers.get("content-type"), /application\/vnd\.apple\.mpegurl/);
+  assert.equal(await stream.text(), playlist);
 });
 
 test("serves a movie primary image through the Emby endpoint", async () => {
@@ -925,5 +1011,65 @@ test("reuses the source advertised by PlaybackInfo without resolving it again", 
 
   assert.equal(response.status, 206);
   assert.equal(calls.length, 1);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
+});
+
+test("refreshes a stale media URL and accepts SenPlayer stream path variants", async () => {
+  const videoBytes = new Uint8Array([0, 0, 0, 32]);
+  const calls = [];
+  const staleSource = encodeURIComponent("https://fast-stream.jav.si/video/stale.mp4");
+  const response = await handleProxy(
+    new Request(
+      `https://clone.example/emby/Videos/42/42/stream.mp4?api_key=bbjavdb-guest&source=${staleSource}&sourceType=video%2Fmp4`,
+      { headers: { range: "bytes=0-3" } },
+    ),
+    {},
+    {},
+    async (url, init = {}) => {
+      const target = String(url);
+      calls.push(target);
+      if (target.endsWith("/video/stale.mp4")) {
+        return new Response("expired", { status: 404 });
+      }
+      if (target.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: { movie: { id: 42, number: "TEST-001" } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (target.includes("/api/v/resolve")) {
+        return new Response(
+          JSON.stringify({
+            variants: [{
+              variant: "original",
+              sourceUrl: "https://fast-stream.jav.si/video/fresh.mp4",
+              sourceType: "video/mp4",
+            }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      assert.equal(target, "https://fast-stream.jav.si/video/fresh.mp4");
+      assert.equal(init.headers.get("range"), "bytes=0-3");
+      return new Response(videoBytes, {
+        status: 206,
+        headers: {
+          "content-range": "bytes 0-3/4",
+          "content-type": "video/mp4",
+        },
+      });
+    },
+  );
+
+  assert.equal(response.status, 206);
+  assert.deepEqual(calls, [
+    "https://fast-stream.jav.si/video/stale.mp4",
+    "https://jdforrepam.com/api/v4/movies/42",
+    "https://catembylegacy.fastcdn.dpdns.org/api/v/resolve?code=TEST-001&lang=zh",
+    "https://fast-stream.jav.si/video/fresh.mp4",
+  ]);
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
 });

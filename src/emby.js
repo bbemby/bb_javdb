@@ -31,6 +31,12 @@ const MEDIA_HOSTS = new Set([
   "h1.gzankun.com",
 ]);
 const MEDIA_SUFFIXES = [".spfcas.com", ".gzankun.com"];
+const INLINE_HLS_CONTENT_TYPES = new Set([
+  "application/mpegurl",
+  "application/vnd.apple.mpegurl",
+  "application/x-mpegurl",
+]);
+const MAX_INLINE_HLS_LENGTH = 2_000_000;
 const HOME_SOURCE_PAGE_SIZE = 50;
 const HOME_MAX_SOURCE_PAGES = 12;
 const IMAGE_CONTENT_TYPES = new Map([
@@ -233,6 +239,36 @@ function safeMediaContentType(value) {
   return /^(?:video\/[a-z0-9.+-]+|application\/(?:vnd\.apple\.|x-)?mpegurl)$/.test(type)
     ? type
     : "video/mp4";
+}
+
+function decodeInlineHls(value) {
+  const source = String(value || "");
+  if (!source.startsWith("data:") || source.length > MAX_INLINE_HLS_LENGTH) {
+    return null;
+  }
+
+  const commaIndex = source.indexOf(",");
+  if (commaIndex === -1) {
+    return null;
+  }
+
+  const metadata = source.slice(5, commaIndex).toLowerCase();
+  const contentType = metadata.split(";")[0];
+  if (!INLINE_HLS_CONTENT_TYPES.has(contentType)) {
+    return null;
+  }
+
+  try {
+    const payload = source.slice(commaIndex + 1);
+    const playlist = metadata.split(";").includes("base64")
+      ? new TextDecoder().decode(
+          Uint8Array.from(atob(payload), (character) => character.charCodeAt(0)),
+        )
+      : decodeURIComponent(payload);
+    return playlist.trimStart().startsWith("#EXTM3U") ? playlist : null;
+  } catch {
+    return null;
+  }
 }
 
 function getToken(request, url) {
@@ -736,19 +772,35 @@ async function resolveVideo(movie, env, fetchImpl) {
   );
   const data = payload?.data || payload;
   const variants = Array.isArray(data?.variants)
-    ? data.variants.filter((item) => safeMediaUrl(item?.sourceUrl, env))
+    ? data.variants.flatMap((item) => {
+        const sourceUrl = safeMediaUrl(item?.sourceUrl, env);
+        const inlinePlaylist = sourceUrl
+          ? null
+          : decodeInlineHls(item?.sourceUrl);
+        if (!sourceUrl && !inlinePlaylist) {
+          return [];
+        }
+        return [{
+          sourceUrl: sourceUrl?.toString() || "",
+          sourceType: inlinePlaylist
+            ? "application/vnd.apple.mpegurl"
+            : item.sourceType || "video/mp4",
+          inlinePlaylist,
+          variant: item.variant,
+          title: item.title || movie.title || movie.number || code,
+          quality: Number(item.quality || 0),
+        }];
+      })
     : [];
   const variant =
     variants.find((item) => item.variant === "original") || variants[0] || null;
-  if (!variant?.sourceUrl) {
+  if (!variant) {
     return null;
   }
 
   return {
-    sourceUrl: variant.sourceUrl,
-    sourceType: variant.sourceType || "video/mp4",
-    title: variant.title || movie.title || movie.number || code,
-    quality: Number(variant.quality || 0),
+    ...variant,
+    alternates: variants.filter((item) => item !== variant),
   };
 }
 
@@ -1063,18 +1115,25 @@ async function itemResponse(id, request, env, fetchImpl, token) {
   }
 
   const item = mapMovie(movie, request.url, env);
-  const subtitles = hasChineseSubtitles(movie)
-    ? [{ codec: "srt", title: "中文字幕" }]
-    : [];
+  const [video, subtitles] = await Promise.all([
+    resolveVideo(movie, env, fetchImpl),
+    hasChineseSubtitles(movie)
+      ? resolveSubtitles(movie, env, fetchImpl).catch(() => [])
+      : Promise.resolve([]),
+  ]);
+  if (!video) {
+    item.PlayAccess = "None";
+    item.MediaSources = [];
+    item.MediaStreams = [];
+    item.MediaSourceCount = 0;
+    item.HasSubtitles = false;
+    return jsonResponse(item);
+  }
   const source = mediaSource(
     item,
     request.url,
     token || (guestAccessEnabled(env) ? guestToken(env) : ""),
-    {
-      sourceType: "video/mp4",
-      title: item.Name,
-      quality: 720,
-    },
+    video,
     subtitles,
   );
   item.Path = source.Path;
@@ -1230,65 +1289,116 @@ async function streamResponse(id, request, env, fetchImpl, token) {
   try {
     const requestUrl = new URL(request.url);
     const suppliedSource = safeMediaUrl(requestUrl.searchParams.get("source"), env);
-    const video = suppliedSource
-      ? {
-          sourceUrl: suppliedSource.toString(),
-          sourceType: safeMediaContentType(requestUrl.searchParams.get("sourceType")),
-        }
-      : await resolveVideo(
-          await getMovie(id, env, fetchImpl, token),
-          env,
-          fetchImpl,
-        );
-    const sourceUrl = safeMediaUrl(video?.sourceUrl, env);
-    if (!video || !sourceUrl) {
-      return errorResponse(404, "No playable video source was found");
-    }
-
-    const headers = new Headers({
+    const requestHeaders = new Headers({
       accept: request.headers.get("accept") || "video/*,*/*;q=0.8",
       "user-agent": "Mozilla/5.0",
     });
     for (const name of ["range", "if-range", "if-none-match", "if-modified-since"]) {
       const value = request.headers.get(name);
       if (value) {
-        headers.set(name, value);
+        requestHeaders.set(name, value);
       }
-    }
-    const upstream = await fetchImpl(sourceUrl.toString(), {
-      method: request.method,
-      headers,
-      redirect: "follow",
-    });
-    const responseHeaders = new Headers({
-      "access-control-allow-origin": "*",
-      "access-control-expose-headers": "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag, Last-Modified",
-      "cache-control": "no-store",
-      "content-disposition": `inline; filename="${encodeURIComponent(id)}.${/mpegurl|m3u8/i.test(video.sourceType || video.sourceUrl) ? "m3u8" : "mp4"}"`,
-      "x-content-type-options": "nosniff",
-    });
-    for (const name of [
-      "accept-ranges",
-      "content-length",
-      "content-range",
-      "content-type",
-      "etag",
-      "last-modified",
-    ]) {
-      const value = upstream.headers.get(name);
-      if (value) {
-        responseHeaders.set(name, value);
-      }
-    }
-    if (!responseHeaders.has("content-type")) {
-      responseHeaders.set("content-type", video.sourceType || "video/mp4");
     }
 
-    return new Response(request.method === "HEAD" ? null : upstream.body, {
-      status: upstream.status,
-      statusText: upstream.statusText,
-      headers: responseHeaders,
-    });
+    const triedSources = new Set();
+    let lastStatus = 404;
+    const tryVideo = async (video) => {
+      const candidates = [video, ...(video?.alternates || [])].filter(Boolean);
+      for (const candidate of candidates) {
+        if (candidate.inlinePlaylist) {
+          return new Response(
+            request.method === "HEAD" ? null : candidate.inlinePlaylist,
+            {
+              status: 200,
+              headers: {
+                "access-control-allow-origin": "*",
+                "cache-control": "no-store",
+                "content-disposition": `inline; filename="${encodeURIComponent(id)}.m3u8"`,
+                "content-type": "application/vnd.apple.mpegurl; charset=utf-8",
+                "x-content-type-options": "nosniff",
+              },
+            },
+          );
+        }
+
+        const sourceUrl = safeMediaUrl(candidate.sourceUrl, env);
+        if (!sourceUrl || triedSources.has(sourceUrl.toString())) {
+          continue;
+        }
+        triedSources.add(sourceUrl.toString());
+        const upstream = await fetchImpl(sourceUrl.toString(), {
+          method: request.method,
+          headers: requestHeaders,
+          redirect: "follow",
+        });
+        if (
+          !upstream.ok &&
+          (upstream.status === 403 ||
+            upstream.status === 404 ||
+            upstream.status === 410 ||
+            upstream.status === 429 ||
+            upstream.status >= 500)
+        ) {
+          lastStatus = upstream.status;
+          await upstream.body?.cancel().catch(() => {});
+          continue;
+        }
+
+        const responseHeaders = new Headers({
+          "access-control-allow-origin": "*",
+          "access-control-expose-headers": "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag, Last-Modified",
+          "cache-control": "no-store",
+          "content-disposition": `inline; filename="${encodeURIComponent(id)}.${/mpegurl|m3u8/i.test(candidate.sourceType || candidate.sourceUrl) ? "m3u8" : "mp4"}"`,
+          "x-content-type-options": "nosniff",
+        });
+        for (const name of [
+          "accept-ranges",
+          "content-length",
+          "content-range",
+          "content-type",
+          "etag",
+          "last-modified",
+        ]) {
+          const value = upstream.headers.get(name);
+          if (value) {
+            responseHeaders.set(name, value);
+          }
+        }
+        if (!responseHeaders.has("content-type")) {
+          responseHeaders.set("content-type", candidate.sourceType || "video/mp4");
+        }
+        return new Response(request.method === "HEAD" ? null : upstream.body, {
+          status: upstream.status,
+          statusText: upstream.statusText,
+          headers: responseHeaders,
+        });
+      }
+      return null;
+    };
+
+    if (suppliedSource) {
+      const response = await tryVideo({
+        sourceUrl: suppliedSource.toString(),
+        sourceType: safeMediaContentType(requestUrl.searchParams.get("sourceType")),
+      });
+      if (response) {
+        return response;
+      }
+    }
+
+    const resolvedVideo = await resolveVideo(
+      await getMovie(id, env, fetchImpl, token),
+      env,
+      fetchImpl,
+    );
+    const response = await tryVideo(resolvedVideo);
+    if (response) {
+      return response;
+    }
+    return errorResponse(
+      lastStatus === 404 ? 404 : 502,
+      "No playable video source was found",
+    );
   } catch (error) {
     return errorResponse(502, error instanceof Error ? error.message : "Video source unavailable");
   }
@@ -1562,6 +1672,17 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
     }
   }
 
+  const downloadMatch = path.match(/^\/Items\/([^/]+)\/Download$/i);
+  if (downloadMatch) {
+    return streamResponse(
+      decodeURIComponent(downloadMatch[1]),
+      request,
+      env,
+      fetchImpl,
+      token,
+    );
+  }
+
   const itemMatch = path.match(/^\/Items\/([^/]+)$/i);
   if (itemMatch) {
     try {
@@ -1585,7 +1706,9 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
     );
   }
 
-  const streamMatch = path.match(/^\/Videos\/([^/]+)\/stream(?:\.[a-z0-9]+)?$/i);
+  const streamMatch = path.match(
+    /^\/Videos\/([^/]+)(?:\/[^/]+)?\/(?:stream|original|download)(?:\.[a-z0-9]+)?$/i,
+  );
   if (streamMatch) {
     return streamResponse(
       decodeURIComponent(streamMatch[1]),
