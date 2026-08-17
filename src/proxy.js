@@ -1,3 +1,5 @@
+import { handleEmby } from "./emby.js";
+
 export const DEFAULT_UPSTREAM_ORIGIN =
   "https://catembylegacy.fastcdn.dpdns.org";
 
@@ -291,6 +293,11 @@ export async function handleProxy(
   _context = {},
   fetchImpl = fetch,
 ) {
+  const embyResponse = await handleEmby(request, env, fetchImpl);
+  if (embyResponse) {
+    return embyResponse;
+  }
+
   const target = resolveUpstreamTarget(request.url, env);
 
   if (target.kind === "blocked") {

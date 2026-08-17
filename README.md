@@ -194,6 +194,8 @@ npx wrangler deploy --dry-run
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `UPSTREAM_ORIGIN` | `https://catembylegacy.fastcdn.dpdns.org` | 上游站点根地址，只允许 `http` 或 `https` |
+| `JAVDB_API_ORIGIN` | `https://jdforrepam.com/api` | Emby 元数据和登录使用的 JAVDB API 根地址 |
+| `EMBY_SERVER_ID` | `bbjavdb-emby` | 返回给客户端的虚拟服务器 ID，改动后客户端可能需要重新添加服务器 |
 | `EXTRA_MEDIA_HOSTS` | 空 | 额外允许代理的媒体域名，多个域名用英文逗号分隔 |
 | `PROXY_EXTERNAL_MEDIA` | `false` | 是否把白名单外部资源改写到同源媒体代理 |
 
@@ -219,6 +221,20 @@ PROXY_EXTERNAL_MEDIA=false
 
 > [!WARNING]
 > 对当前默认上游，请保持 `PROXY_EXTERNAL_MEDIA=false`。开启后 API 地址也会被改写，可能导致前端不再生成必需的 `jdsignature`，从而出现“Failed to load movies”或详情加载失败。
+
+## 在 Emby 客户端中使用
+
+项目现在同时提供一个轻量的 Emby 兼容 HTTP 接口，不需要安装 Emby 服务端插件。它把 JAVDB 的影片列表、搜索、详情、封面、登录和播放信息映射成 Emby 客户端会调用的接口；播放时由 Worker 转发上游视频，并保留 `Range`/`206 Partial Content`，所以支持常见的 Emby 播放器和电视端应用。
+
+部署完成后，在 Emby 客户端添加服务器：
+
+1. 服务器地址填写部署后的域名，例如 `https://your-worker.example.com`，不要把 `/emby` 作为必填前缀；兼容层同时接受根路径和 `/emby` 路径。
+2. 用户名和密码填写你自己的 JAVDB 账号。登录请求只用于向上游换取会话令牌，不会写入 Worker 环境变量。
+3. 进入“步兵JAVDB”虚拟电影库，选择影片即可查看标题、日期、简介、标签、演员和封面；点击播放时客户端会先请求 `PlaybackInfo`，随后访问 `/Videos/{id}/stream`。
+
+支持的主要接口包括：`/System/Info/Public`、`/Users/AuthenticateByName`、`/Users/{id}/Views`、`/Items`、`/Items/{id}`、`/Items/{id}/Images/Primary`、`/Items/{id}/PlaybackInfo` 和 `/Videos/{id}/stream`。这些接口也覆盖了大多数 Emby 手机、桌面和电视客户端的首次连接流程。
+
+这是实时代理，不会缓存或保存影片文件。请只对你有权访问的内容使用，并在公开部署时给 Worker 绑定访问控制或仅允许自己的客户端访问。
 
 ## 自定义界面
 
@@ -252,6 +268,7 @@ npm test
 |   `-- dev-node.mjs      # Node 本地预览适配器
 |-- src/
 |   |-- proxy.js          # 核心代理、改写和安全策略
+|   |-- emby.js           # Emby 兼容接口、元数据映射和视频转发
 |   `-- worker.js         # 独立 Worker 入口
 |-- test/
 |   `-- proxy.test.mjs    # Node 单元测试

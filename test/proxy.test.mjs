@@ -8,6 +8,7 @@ import {
   resolveUpstreamTarget,
   rewriteText,
 } from "../src/proxy.js";
+import { createJavdbSignature } from "../src/emby.js";
 
 const UPSTREAM = "https://catembylegacy.fastcdn.dpdns.org";
 
@@ -240,4 +241,204 @@ test("blocks arbitrary proxy targets", async () => {
   );
 
   assert.equal(response.status, 403);
+});
+
+test("creates the same JavDB MD5 signature format as the web client", () => {
+  assert.equal(
+    createJavdbSignature(1700000000),
+    "1700000000.lpw6vgqzsp.dacaffcd8b4e1b35c2752f065e906f3a",
+  );
+});
+
+test("serves Emby system metadata without contacting the upstream", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/System/Info/Public"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ProductName, "Emby Compatible Server");
+});
+
+test("maps JavDB movies into an Emby item list", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/Items?ParentId=bbjavdb-root&Limit=10"),
+    {},
+    {},
+    async (url) => {
+      assert.match(url, /jdforrepam\.com\/api\/v1\/movies\/latest/);
+      return new Response(
+        JSON.stringify({
+          success: 1,
+          data: {
+            movies: [
+              {
+                id: 42,
+                number: "TEST-001",
+                title: "Test Movie",
+                release_date: "2024-01-02",
+                duration: 120,
+                summary: "A test movie",
+                cover_url: "https://jdforrepam.com/covers/test.jpg",
+                tags: [{ name: "Drama" }],
+              },
+            ],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.Items[0].Id, "42");
+  assert.equal(payload.Items[0].Name, "Test Movie");
+  assert.equal(payload.Items[0].Type, "Movie");
+  assert.deepEqual(payload.Items[0].Genres, ["Drama"]);
+});
+
+test("authenticates Emby users against JavDB and returns an access token", async () => {
+  let receivedBody;
+  const response = await handleProxy(
+    new Request("https://clone.example/Users/AuthenticateByName", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ Username: "demo", Pw: "secret" }),
+    }),
+    {},
+    {},
+    async (url, init) => {
+      assert.match(url, /jdforrepam\.com\/api\/v1\/sessions/);
+      receivedBody = await new Response(init.body).formData();
+      return new Response(
+        JSON.stringify({
+          success: 1,
+          data: { token: "javdb-token", user: { username: "demo" } },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.AccessToken, "javdb-token");
+  assert.equal(payload.User.Name, "demo");
+  assert.equal(receivedBody.get("username"), "demo");
+  assert.equal(receivedBody.get("password"), "secret");
+});
+
+test("maps full-video resolution into Emby playback info", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/Items/42/PlaybackInfo?api_key=javdb-token", {
+      method: "POST",
+    }),
+    {},
+    {},
+    async (url) => {
+      if (url.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: { movie: { id: 42, number: "TEST-001", title: "Test Movie" } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      assert.match(url, /\/api\/v\/resolve\?code=TEST-001/);
+      return new Response(
+        JSON.stringify({
+          variants: [{ variant: "original", sourceUrl: "https://jdforrepam.com/video/test.mp4", sourceType: "video/mp4" }],
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.MediaSources[0].Container, "mp4");
+  assert.match(payload.MediaSources[0].Path, /\/Videos\/42\/stream/);
+});
+
+test("serves a movie primary image through the Emby endpoint", async () => {
+  const imageBytes = new Uint8Array([255, 216, 255, 217]);
+  let imageUrl;
+  const response = await handleProxy(
+    new Request("https://clone.example/Items/42/Images/Primary"),
+    {},
+    {},
+    async (url) => {
+      const target = String(url);
+      if (target.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: { movie: { id: 42, cover_url: "https://jdforrepam.com/covers/test.jpg" } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      imageUrl = target;
+      return new Response(imageBytes, {
+        headers: { "content-type": "image/jpeg" },
+      });
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(imageUrl, "https://jdforrepam.com/covers/test.jpg");
+  assert.equal(response.headers.get("content-type"), "image/jpeg");
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), imageBytes);
+});
+
+test("streams a resolved video and forwards Range headers", async () => {
+  const videoBytes = new Uint8Array([0, 1, 2, 3]);
+  let sourceRange;
+  const response = await handleProxy(
+    new Request("https://clone.example/Videos/42/stream?api_key=javdb-token", {
+      headers: { range: "bytes=0-3" },
+    }),
+    {},
+    {},
+    async (url, init = {}) => {
+      const target = String(url);
+      if (target.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: { movie: { id: 42, number: "TEST-001", title: "Test Movie" } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (target.includes("/api/v/resolve")) {
+        return new Response(
+          JSON.stringify({
+            variants: [{ variant: "original", sourceUrl: "https://jdforrepam.com/video/test.mp4", sourceType: "video/mp4" }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      sourceRange = init.headers?.get("range");
+      return new Response(videoBytes, {
+        status: 206,
+        headers: {
+          "accept-ranges": "bytes",
+          "content-range": "bytes 0-3/4",
+          "content-type": "video/mp4",
+        },
+      });
+    },
+  );
+
+  assert.equal(response.status, 206);
+  assert.equal(sourceRange, "bytes=0-3");
+  assert.equal(response.headers.get("content-range"), "bytes 0-3/4");
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
 });

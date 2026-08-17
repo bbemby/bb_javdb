@@ -9,6 +9,9 @@ const env = {
   UPSTREAM_ORIGIN:
     process.env.UPSTREAM_ORIGIN ||
     "https://catembylegacy.fastcdn.dpdns.org",
+  JAVDB_API_ORIGIN:
+    process.env.JAVDB_API_ORIGIN || "https://jdforrepam.com/api",
+  EMBY_SERVER_ID: process.env.EMBY_SERVER_ID || "bbjavdb-emby",
   EXTRA_MEDIA_HOSTS: process.env.EXTRA_MEDIA_HOSTS || "",
 };
 
