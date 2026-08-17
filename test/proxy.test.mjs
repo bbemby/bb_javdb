@@ -26,6 +26,7 @@ test("maps application routes to the source site", () => {
 
 test("allows only known media hosts", () => {
   assert.equal(isAllowedMediaHost("jdforrepam.com"), true);
+  assert.equal(isAllowedMediaHost("fast-stream.jav.si"), true);
   assert.equal(isAllowedMediaHost("h7.gzankun.com"), true);
   assert.equal(isAllowedMediaHost("evil.example"), false);
 
@@ -323,6 +324,8 @@ test("maps JavDB movies into an Emby item list", async () => {
     {},
     async (url) => {
       assert.match(url, /jdforrepam\.com\/api\/v1\/movies\/latest/);
+      assert.match(url, /filter_by=subtitle/);
+      assert.match(url, /limit=50/);
       return new Response(
         JSON.stringify({
           success: 1,
@@ -337,6 +340,15 @@ test("maps JavDB movies into an Emby item list", async () => {
                 summary: "A test movie",
                 cover_url: "https://jdforrepam.com/covers/test.jpg",
                 tags: [{ name: "Drama" }],
+                can_play: true,
+                has_cnsub: true,
+              },
+              {
+                id: 43,
+                number: "TEST-002",
+                title: "Not Playable",
+                can_play: false,
+                has_cnsub: true,
               },
             ],
           },
@@ -353,7 +365,77 @@ test("maps JavDB movies into an Emby item list", async () => {
   assert.equal(payload.Items[0].Type, "Movie");
   assert.equal(payload.Items[0].ServerId, "bbjavdb-emby");
   assert.equal(payload.Items[0].ParentId, "bbjavdb-root");
-  assert.deepEqual(payload.Items[0].Genres, ["Drama"]);
+  assert.equal(payload.Items.length, 1);
+  assert.deepEqual(payload.Items[0].Genres, ["可播放", "中文字幕", "Drama"]);
+});
+
+test("forwards Emby access tokens to JavDB catalog requests", async () => {
+  let authorization;
+  const response = await handleProxy(
+    new Request(
+      "https://clone.example/Users/bbjavdb-user/Items?ParentId=bbjavdb-root&Limit=1",
+      { headers: { "X-MediaBrowser-Token": "javdb-token" } },
+    ),
+    {},
+    {},
+    async (_url, init) => {
+      authorization = init.headers.get("authorization");
+      return new Response(
+        JSON.stringify({ success: 1, data: { movies: [] } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(authorization, "javdb-token");
+});
+
+test("maps the playable media library to the playable JavDB filter", async () => {
+  const response = await handleProxy(
+    new Request(
+      "https://clone.example/Items?ParentId=bbjavdb-playable&Limit=10",
+    ),
+    {},
+    {},
+    async (url) => {
+      assert.match(url, /filter_by=can_play/);
+      return new Response(
+        JSON.stringify({
+          success: 1,
+          data: {
+            movies: [{
+              id: 44,
+              number: "TEST-003",
+              title: "Playable without subtitles",
+              can_play: true,
+              has_cnsub: false,
+            }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(payload.Items.length, 1);
+  assert.equal(payload.Items[0].ParentId, "bbjavdb-playable");
+  assert.deepEqual(payload.Items[0].Genres, ["可播放"]);
+});
+
+test("supports an Emby-prefixed server probe", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ProductName, "Emby Compatible Server");
 });
 
 test("maps the user-scoped latest route into an Emby item array", async () => {
@@ -367,7 +449,13 @@ test("maps the user-scoped latest route into an Emby item array", async () => {
         JSON.stringify({
           success: 1,
           data: {
-            movies: [{ id: 42, number: "TEST-001", title: "Latest Movie" }],
+            movies: [{
+              id: 42,
+              number: "TEST-001",
+              title: "Latest Movie",
+              can_play: true,
+              has_cnsub: true,
+            }],
           },
         }),
         { headers: { "content-type": "application/json" } },
@@ -379,7 +467,8 @@ test("maps the user-scoped latest route into an Emby item array", async () => {
   assert.equal(response.status, 200);
   assert.equal(Array.isArray(payload), true);
   assert.equal(payload[0].Name, "Latest Movie");
-  assert.match(payload[0].Path, /\/emby\/Items\/42$/);
+  assert.equal(payload[0].ParentId, "bbjavdb-chinese-playable");
+  assert.equal("Path" in payload[0], false);
 });
 
 test("returns JSON placeholders for optional Emby home sections", async () => {
@@ -481,8 +570,74 @@ test("advertises a non-empty virtual movie library", async () => {
   const viewsPayload = await views.json();
   const countsPayload = await counts.json();
   assert.equal(viewsPayload.Items[0].ChildCount, 32);
+  assert.equal(viewsPayload.TotalRecordCount, 2);
+  assert.equal(viewsPayload.StartIndex, 0);
+  assert.deepEqual(
+    viewsPayload.Items.map((item) => [item.Id, item.Name]),
+    [
+      ["bbjavdb-playable", "可播放"],
+      ["bbjavdb-chinese-playable", "中文可播放"],
+    ],
+  );
   assert.equal(countsPayload.MovieCount, 32);
   assert.equal(countsPayload.ItemCount, 32);
+});
+
+test("returns Emby-compatible media folder and virtual folder queries", async () => {
+  const mediaFolders = await handleProxy(
+    new Request("https://clone.example/emby/Library/MediaFolders"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+  const virtualFolders = await handleProxy(
+    new Request("https://clone.example/emby/Library/VirtualFolders/Query"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  const mediaPayload = await mediaFolders.json();
+  const virtualPayload = await virtualFolders.json();
+  assert.equal(mediaPayload.TotalRecordCount, 2);
+  assert.equal(mediaPayload.Items[0].Id, "bbjavdb-playable");
+  assert.equal(mediaPayload.Items[0].Type, "CollectionFolder");
+  assert.equal(virtualPayload.TotalRecordCount, 2);
+  assert.equal(virtualPayload.Items[0].ItemId, "bbjavdb-playable");
+  assert.equal(virtualPayload.Items[0].CollectionType, "movies");
+});
+
+test("serves the user root item and user-scoped suggestions", async () => {
+  const root = await handleProxy(
+    new Request("https://clone.example/emby/Users/bbjavdb-user/Items/Root"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+  const suggestions = await handleProxy(
+    new Request("https://clone.example/emby/Users/bbjavdb-user/Suggestions"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  const rootPayload = await root.json();
+  assert.equal(rootPayload.Id, "bbjavdb-root");
+  assert.equal(rootPayload.Type, "Folder");
+  assert.equal(rootPayload.ChildCount, 2);
+  assert.deepEqual(await suggestions.json(), {
+    Items: [],
+    TotalRecordCount: 0,
+    StartIndex: 0,
+  });
 });
 
 test("returns JSON errors for unknown Emby routes instead of proxying HTML", async () => {
@@ -548,10 +703,24 @@ test("maps full-video resolution into Emby playback info", async () => {
           { headers: { "content-type": "application/json" } },
         );
       }
-      assert.match(url, /\/api\/v\/resolve\?code=TEST-001/);
+      if (url.includes("/api/v/resolve")) {
+        return new Response(
+          JSON.stringify({
+            variants: [{ variant: "original", sourceUrl: "https://jdforrepam.com/video/test.mp4", sourceType: "video/mp4" }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      assert.match(url, /\/api\/subtitle\?name=TEST-001/);
       return new Response(
         JSON.stringify({
-          variants: [{ variant: "original", sourceUrl: "https://jdforrepam.com/video/test.mp4", sourceType: "video/mp4" }],
+          code: 0,
+          data: [{
+            cid: "subtitle-1",
+            url: "https://subtitle.example/test.srt",
+            ext: "srt",
+            name: "TEST-001.srt",
+          }],
         }),
         { headers: { "content-type": "application/json" } },
       );
@@ -561,12 +730,54 @@ test("maps full-video resolution into Emby playback info", async () => {
   const payload = await response.json();
   assert.equal(response.status, 200);
   assert.equal(payload.MediaSources[0].Container, "mp4");
-  assert.match(payload.MediaSources[0].Path, /\/Videos\/42\/stream/);
+  assert.match(payload.MediaSources[0].Path, /\/Videos\/42\/stream\.mp4/);
   assert.match(payload.MediaSources[0].Path, /api_key=bbjavdb-guest/);
+  assert.match(payload.MediaSources[0].Path, /static=true/);
+  assert.match(payload.MediaSources[0].Path, /mediaSourceId=42/);
+  assert.match(payload.MediaSources[0].Path, /source=https%3A%2F%2Fjdforrepam\.com/);
+  assert.match(payload.MediaSources[0].DirectStreamUrl, /^\/Videos\/42\/stream\.mp4/);
+  assert.equal(payload.MediaSources[0].MediaStreams[1].Type, "Audio");
+  assert.equal(payload.MediaSources[0].MediaStreams[1].Codec, "aac");
+  assert.equal(payload.MediaSources[0].MediaStreams[2].Language, "chi");
+  assert.match(payload.MediaSources[0].MediaStreams[2].DeliveryUrl, /\/Subtitles\/2\/Stream\.srt/);
+});
+
+test("embeds a directly streamable media source in movie details", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/Items/42?api_key=bbjavdb-guest"),
+    {},
+    {},
+    async (url) => {
+      assert.match(url, /\/v4\/movies\/42/);
+      return new Response(
+        JSON.stringify({
+          success: 1,
+          data: {
+            movie: {
+              id: 42,
+              number: "TEST-001",
+              title: "Test Movie",
+              can_play: true,
+              has_cnsub: true,
+            },
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(payload.PlayAccess, "Full");
+  assert.equal(payload.MediaSourceCount, 1);
+  assert.match(payload.Path, /\/Videos\/42\/stream\.mp4/);
+  assert.equal(payload.MediaSources[0].MediaStreams[1].Type, "Audio");
+  assert.equal(payload.MediaSources[0].DefaultSubtitleStreamIndex, 2);
 });
 
 test("serves a movie primary image through the Emby endpoint", async () => {
   const imageBytes = new Uint8Array([255, 216, 255, 217]);
+  const encryptedImageBytes = new Uint8Array([234, 21, 50, 21, 51]);
   let imageUrl;
   const response = await handleProxy(
     new Request("https://clone.example/Items/42/Images/Primary"),
@@ -584,8 +795,8 @@ test("serves a movie primary image through the Emby endpoint", async () => {
         );
       }
       imageUrl = target;
-      return new Response(imageBytes, {
-        headers: { "content-type": "image/jpeg" },
+      return new Response(encryptedImageBytes, {
+        headers: { "content-type": "binary/octet-stream" },
       });
     },
   );
@@ -596,12 +807,56 @@ test("serves a movie primary image through the Emby endpoint", async () => {
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), imageBytes);
 });
 
+test("serves the advertised Chinese subtitle stream", async () => {
+  const subtitleText = "1\r\n00:00:01,000 --> 00:00:02,000\r\n你好\r\n";
+  let subtitleFileUrl;
+  const response = await handleProxy(
+    new Request("https://clone.example/Videos/42/42/Subtitles/2/Stream.srt?api_key=bbjavdb-guest"),
+    {},
+    {},
+    async (url) => {
+      const target = String(url);
+      if (target.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: { movie: { id: 42, number: "TEST-001" } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (target.includes("/api/subtitle?name=TEST-001")) {
+        return new Response(
+          JSON.stringify({
+            code: 0,
+            data: [{
+              cid: "subtitle-1",
+              url: "https://subtitle.example/test.srt",
+              ext: "srt",
+            }],
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      subtitleFileUrl = target;
+      return new Response(subtitleText, {
+        headers: { "content-type": "text/plain; charset=utf-8" },
+      });
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(subtitleFileUrl, /\/api\/subtitle\/file\?url=/);
+  assert.equal(response.headers.get("content-type"), "application/x-subrip; charset=utf-8");
+  assert.equal(await response.text(), subtitleText);
+});
+
 test("streams a resolved video and forwards Range headers", async () => {
   const videoBytes = new Uint8Array([0, 1, 2, 3]);
   let sourceRange;
   const response = await handleProxy(
-    new Request("https://clone.example/Videos/42/stream?api_key=javdb-token", {
-      headers: { range: "bytes=0-3" },
+    new Request("https://clone.example/Videos/42/stream.mp4?api_key=javdb-token", {
+      headers: { "if-range": "test-etag", range: "bytes=0-3" },
     }),
     {},
     {},
@@ -619,7 +874,7 @@ test("streams a resolved video and forwards Range headers", async () => {
       if (target.includes("/api/v/resolve")) {
         return new Response(
           JSON.stringify({
-            variants: [{ variant: "original", sourceUrl: "https://jdforrepam.com/video/test.mp4", sourceType: "video/mp4" }],
+            variants: [{ variant: "original", sourceUrl: "https://fast-stream.jav.si/video/test.mp4", sourceType: "video/mp4" }],
           }),
           { headers: { "content-type": "application/json" } },
         );
@@ -638,6 +893,37 @@ test("streams a resolved video and forwards Range headers", async () => {
 
   assert.equal(response.status, 206);
   assert.equal(sourceRange, "bytes=0-3");
+  assert.match(response.headers.get("access-control-expose-headers"), /Content-Range/);
   assert.equal(response.headers.get("content-range"), "bytes 0-3/4");
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
+});
+
+test("reuses the source advertised by PlaybackInfo without resolving it again", async () => {
+  const videoBytes = new Uint8Array([0, 0, 0, 32]);
+  const calls = [];
+  const source = encodeURIComponent("https://fast-stream.jav.si/video/test.mp4");
+  const response = await handleProxy(
+    new Request(
+      `https://clone.example/Videos/42/stream.mp4?api_key=bbjavdb-guest&source=${source}&sourceType=video%2Fmp4`,
+      { headers: { range: "bytes=0-3" } },
+    ),
+    {},
+    {},
+    async (url, init = {}) => {
+      calls.push(String(url));
+      assert.equal(String(url), "https://fast-stream.jav.si/video/test.mp4");
+      assert.equal(init.headers.get("range"), "bytes=0-3");
+      return new Response(videoBytes, {
+        status: 206,
+        headers: {
+          "content-range": "bytes 0-3/4",
+          "content-type": "video/mp4",
+        },
+      });
+    },
+  );
+
+  assert.equal(response.status, 206);
+  assert.equal(calls.length, 1);
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
 });

@@ -4,16 +4,50 @@ const SIGNATURE_KEY = "lpw6vgqzsp";
 const SIGNATURE_SECRET =
   "71cf27bb3c0bcdf207b64abecddc970098c7421ee7203b9cdae54478478a199e7d5a6e1a57691123c1a931c057842fb73ba3b3c83bcd69c17ccf174081e3d8aa";
 const ROOT_ID = "bbjavdb-root";
+const PLAYABLE_LIBRARY_ID = "bbjavdb-playable";
+const CHINESE_PLAYABLE_LIBRARY_ID = "bbjavdb-chinese-playable";
 const USER_ID = "bbjavdb-user";
 const PRODUCT_NAME = "步兵JAVDB";
 const DEFAULT_GUEST_TOKEN = "bbjavdb-guest";
+const LIBRARIES = [
+  {
+    id: PLAYABLE_LIBRARY_ID,
+    name: "可播放",
+    sourceFilter: "can_play",
+    matches: (movie) => Boolean(movie?.can_play),
+  },
+  {
+    id: CHINESE_PLAYABLE_LIBRARY_ID,
+    name: "中文可播放",
+    sourceFilter: "subtitle",
+    matches: (movie) => isPlayableChinese(movie),
+  },
+];
 
 const MEDIA_HOSTS = new Set([
+  "fast-stream.jav.si",
   "jdforrepam.com",
   "tp.spfcas.com",
   "h1.gzankun.com",
 ]);
 const MEDIA_SUFFIXES = [".spfcas.com", ".gzankun.com"];
+const HOME_SOURCE_PAGE_SIZE = 50;
+const HOME_MAX_SOURCE_PAGES = 12;
+const IMAGE_CONTENT_TYPES = new Map([
+  [".avif", "image/avif"],
+  [".gif", "image/gif"],
+  [".jpeg", "image/jpeg"],
+  [".jpg", "image/jpeg"],
+  [".png", "image/png"],
+  [".webp", "image/webp"],
+]);
+const IMAGE_SIGNATURES = [
+  { contentType: "image/jpeg", bytes: [0xff, 0xd8, 0xff] },
+  { contentType: "image/png", bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  { contentType: "image/gif", bytes: [0x47, 0x49, 0x46, 0x38, 0x37, 0x61] },
+  { contentType: "image/gif", bytes: [0x47, 0x49, 0x46, 0x38, 0x39, 0x61] },
+  { contentType: "image/bmp", bytes: [0x42, 0x4d] },
+];
 
 function add32(...values) {
   return values.reduce((sum, value) => (sum + value) | 0, 0);
@@ -194,13 +228,26 @@ function safeMediaUrl(value, env) {
   return null;
 }
 
+function safeMediaContentType(value) {
+  const type = String(value || "").toLowerCase();
+  return /^(?:video\/[a-z0-9.+-]+|application\/(?:vnd\.apple\.|x-)?mpegurl)$/.test(type)
+    ? type
+    : "video/mp4";
+}
+
 function getToken(request, url) {
-  const queryToken = url.searchParams.get("api_key") || url.searchParams.get("ApiKey");
+  const queryToken =
+    url.searchParams.get("api_key") ||
+    url.searchParams.get("ApiKey") ||
+    url.searchParams.get("access_token") ||
+    url.searchParams.get("AccessToken");
   if (queryToken) {
     return queryToken;
   }
 
-  const directToken = request.headers.get("x-emby-token");
+  const directToken =
+    request.headers.get("x-emby-token") ||
+    request.headers.get("x-mediabrowser-token");
   if (directToken) {
     return directToken;
   }
@@ -209,22 +256,32 @@ function getToken(request, url) {
     request.headers.get("x-emby-authorization") ||
     request.headers.get("authorization") ||
     "";
-  const match = authorization.match(/Token[= ]+"?([^", ]+)/i);
-  return match ? match[1] : "";
+  const tokenMatch = authorization.match(/\bToken\s*[=:]\s*"?([^",\s]+)/i);
+  if (tokenMatch) {
+    return tokenMatch[1];
+  }
+
+  const bearerMatch = authorization.match(/^Bearer\s+([^\s]+)/i);
+  return bearerMatch ? bearerMatch[1] : "";
 }
 
 function routePath(requestUrl) {
   const path = new URL(requestUrl).pathname;
-  return path.startsWith("/emby/") ? path.slice("/emby".length) : path;
+  const withoutPrefix = /^\/emby(?:\/|$)/i.test(path)
+    ? path.slice("/emby".length)
+    : path;
+  return withoutPrefix.replace(/\/+$/, "") || "/";
 }
 
 function normalizeClientPath(path) {
-  return path.replace(/^\/Users\/[^/]+\/Items(?=\/|$)/i, "/Items");
+  return path
+    .replace(/^\/Users\/[^/]+\/Items(?=\/|$)/i, "/Items")
+    .replace(/^\/Users\/[^/]+\/Suggestions$/i, "/Suggestions");
 }
 
 function publicRoutePath(requestUrl, path) {
   const requestPath = new URL(requestUrl).pathname;
-  return requestPath.startsWith("/emby/") ? `/emby${path}` : path;
+  return /^\/emby(?:\/|$)/i.test(requestPath) ? `/emby${path}` : path;
 }
 
 function serverId(env) {
@@ -247,10 +304,57 @@ function virtualUser(env = {}, name = "JAVDB Guest", hasPassword = false) {
     ServerId: serverId(env),
     HasPassword: hasPassword,
     HasConfiguredPassword: hasPassword,
+    HasConfiguredEasyPassword: false,
     EnableAutoLogin: !hasPassword,
+    LastLoginDate: new Date().toISOString(),
+    LastActivityDate: new Date().toISOString(),
     Configuration: {
       PlayDefaultAudioTrack: true,
       SubtitleLanguagePreference: "zh-CN",
+      DisplayMissingEpisodes: false,
+      GroupedFolders: [],
+      SubtitleMode: "Default",
+      DisplayCollectionsView: false,
+      EnableLocalPassword: false,
+      OrderedViews: [],
+      LatestItemsExcludes: [],
+      MyMediaExcludes: [],
+      HidePlayedInLatest: false,
+      RememberAudioSelections: true,
+      RememberSubtitleSelections: true,
+      EnableNextEpisodeAutoPlay: true,
+    },
+    Policy: {
+      IsAdministrator: false,
+      IsHidden: false,
+      IsDisabled: false,
+      BlockedTags: [],
+      EnableUserPreferenceAccess: true,
+      AccessSchedules: [],
+      EnableRemoteControlOfOtherUsers: false,
+      EnableSharedDeviceControl: false,
+      EnableRemoteAccess: true,
+      EnableLiveTvManagement: false,
+      EnableLiveTvAccess: true,
+      EnableMediaPlayback: true,
+      EnableAudioPlaybackTranscoding: true,
+      EnableVideoPlaybackTranscoding: true,
+      EnablePlaybackRemuxing: true,
+      EnableContentDeletion: false,
+      EnableContentDownloading: true,
+      EnableSyncTranscoding: true,
+      EnableMediaConversion: true,
+      EnableAllFolders: true,
+      EnabledFolders: [],
+      EnableContentDeletionFromFolders: [],
+      InvalidLoginAttemptCount: 0,
+      LoginAttemptsBeforeLockout: -1,
+      IsProtected: false,
+      EnablePublicSharing: true,
+      RemoteClientBitrateLimit: 0,
+      AuthenticationProviderId: "DefaultAuthenticationProvider",
+      PasswordResetProviderId: "DefaultPasswordResetProvider",
+      SyncPlayAccess: "CreateAndJoin",
     },
   };
 }
@@ -267,6 +371,7 @@ async function javdbRequest(path, env, fetchImpl, options = {}) {
 
   const headers = new Headers(options.headers);
   headers.set("accept", "application/json");
+  headers.set("user-agent", "Mozilla/5.0");
   headers.set("jdsignature", createJavdbSignature());
   if (options.token) {
     headers.set("authorization", options.token);
@@ -314,13 +419,163 @@ function tagName(tag) {
   return typeof tag === "string" ? tag : tag?.name || "";
 }
 
-function mapMovie(movie, requestUrl, env = {}) {
+function hasChineseSubtitles(movie) {
+  return Boolean(movie?.has_cnsub || Number(movie?.play_subtitle || 0) > 0);
+}
+
+function isPlayableChinese(movie) {
+  return Boolean(movie?.can_play) && hasChineseSubtitles(movie);
+}
+
+function bytesStartWith(bytes, signature, offset = 0) {
+  return bytes.length >= offset + signature.length &&
+    signature.every((value, index) => bytes[offset + index] === value);
+}
+
+function sniffImageContentType(bytes) {
+  for (const signature of IMAGE_SIGNATURES) {
+    if (bytesStartWith(bytes, signature.bytes)) {
+      return signature.contentType;
+    }
+  }
+  if (
+    bytesStartWith(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+    bytesStartWith(bytes, [0x57, 0x45, 0x42, 0x50], 8)
+  ) {
+    return "image/webp";
+  }
+  if (
+    bytesStartWith(bytes, [0x66, 0x74, 0x79, 0x70], 4) &&
+    (
+      bytesStartWith(bytes, [0x61, 0x76, 0x69, 0x66], 8) ||
+      bytesStartWith(bytes, [0x61, 0x76, 0x69, 0x73], 8)
+    )
+  ) {
+    return "image/avif";
+  }
+  return null;
+}
+
+function xorImageBytes(bytes, key, skip = 0) {
+  const output = new Uint8Array(Math.max(bytes.length - skip, 0));
+  for (let index = skip; index < bytes.length; index += 1) {
+    output[index - skip] = bytes[index] ^ key;
+  }
+  return output;
+}
+
+function decodeImagePrefix(bytes) {
+  const directType = sniffImageContentType(bytes);
+  if (directType) {
+    return { bytes, contentType: directType, xorKey: null };
+  }
+
+  if (bytes.length > 1) {
+    const xorKey = bytes[0];
+    const decoded = xorImageBytes(bytes, xorKey, 1);
+    const contentType = sniffImageContentType(decoded);
+    if (contentType) {
+      return { bytes: decoded, contentType, xorKey };
+    }
+  }
+
+  for (let skip = 0; skip <= 2; skip += 1) {
+    const decoded = xorImageBytes(bytes, 0x7f, skip);
+    const contentType = sniffImageContentType(decoded);
+    if (contentType) {
+      return { bytes: decoded, contentType, xorKey: 0x7f };
+    }
+  }
+
+  return { bytes, contentType: null, xorKey: null };
+}
+
+async function decodeImageBody(body) {
+  if (!body) {
+    return { body: null, contentType: null };
+  }
+
+  const reader = body.getReader();
+  const chunks = [];
+  let byteLength = 0;
+  while (byteLength < 12) {
+    const result = await reader.read();
+    if (result.done) {
+      break;
+    }
+    chunks.push(result.value);
+    byteLength += result.value.byteLength;
+  }
+  const prefix = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    prefix.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+
+  const decoded = decodeImagePrefix(prefix);
+  const decodedBody = new ReadableStream({
+    start(controller) {
+      if (decoded.bytes.byteLength > 0) {
+        controller.enqueue(decoded.bytes);
+      }
+    },
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(
+          decoded.xorKey === null
+            ? result.value
+            : xorImageBytes(result.value, decoded.xorKey),
+        );
+      } catch (error) {
+        controller.error(error);
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    },
+  });
+  return { body: decodedBody, contentType: decoded.contentType };
+}
+
+function imageContentType(imageUrl, declaredType, detectedType) {
+  if (detectedType) {
+    return detectedType;
+  }
+  const normalized = String(declaredType || "").toLowerCase();
+  if (normalized.startsWith("image/")) {
+    return declaredType;
+  }
+
+  const pathname = imageUrl.pathname.toLowerCase();
+  for (const [extension, contentType] of IMAGE_CONTENT_TYPES) {
+    if (pathname.endsWith(extension)) {
+      return contentType;
+    }
+  }
+
+  return "image/jpeg";
+}
+
+function mapMovie(movie, requestUrl, env = {}, parentId = CHINESE_PLAYABLE_LIBRARY_ID) {
   const id = String(movie.id ?? movie.number ?? "");
   const image = movie.cover_url || movie.thumb_url || "";
   const date = movie.release_date || movie.released_at || "";
   const year = Number.parseInt(String(date).slice(0, 4), 10);
   const duration = Number(movie.duration || 0);
   const tags = (movie.tags || []).map(tagName).filter(Boolean);
+  if (hasChineseSubtitles(movie)) {
+    tags.unshift("中文字幕");
+  }
+  if (movie.can_play) {
+    tags.unshift("可播放");
+  }
+  const uniqueTags = [...new Set(tags)];
   const actors = (movie.actors || []).filter(Boolean).map((actor) => ({
     Name: actor.name || actor,
     Type: "Actor",
@@ -329,23 +584,28 @@ function mapMovie(movie, requestUrl, env = {}) {
   const item = {
     Id: id,
     ServerId: serverId(env),
-    ParentId: ROOT_ID,
+    ParentId: parentId,
     Name: movie.title || movie.number || id,
     OriginalTitle: movie.title || movie.number || id,
     SortName: movie.title || movie.number || id,
     Type: "Movie",
     IsFolder: false,
     CanDelete: false,
-    CanDownload: false,
+    CanDownload: true,
+    SupportsSync: true,
+    PlayAccess: "Full",
     LocationType: "Remote",
     MediaType: "Video",
+    VideoType: "VideoFile",
+    Container: "mp4",
     Overview: movie.summary || "",
     PremiereDate: date || undefined,
     ProductionYear: Number.isFinite(year) ? year : undefined,
     RunTimeTicks: duration > 0 ? Math.round(duration * 60 * 10_000_000) : undefined,
-    Genres: tags,
+    Genres: uniqueTags,
+    Tags: uniqueTags,
     People: actors,
-    ImageTags: image ? { Primary: "1" } : {},
+    ImageTags: image ? { Primary: id } : {},
     BackdropImageTags: [],
     PrimaryImageAspectRatio: image ? 0.667 : undefined,
     ProviderIds: { JavDB: id },
@@ -355,7 +615,6 @@ function mapMovie(movie, requestUrl, env = {}) {
       IsFavorite: false,
       PlaybackPositionTicks: 0,
     },
-    Path: `${new URL(requestUrl).origin}${publicRoutePath(requestUrl, `/Items/${encodeURIComponent(id)}`)}`,
   };
 
   if (movie.maker_name) {
@@ -376,31 +635,90 @@ function mapMovie(movie, requestUrl, env = {}) {
   return item;
 }
 
-async function getMovie(id, env, fetchImpl) {
-  const payload = await javdbRequest(`/v4/movies/${encodeURIComponent(id)}`, env, fetchImpl);
+function apiToken(token, env) {
+  const value = String(token || "");
+  return value && value !== guestToken(env) ? value : "";
+}
+
+async function getMovie(id, env, fetchImpl, token = "") {
+  const payload = await javdbRequest(
+    `/v4/movies/${encodeURIComponent(id)}`,
+    env,
+    fetchImpl,
+    { token: apiToken(token, env) },
+  );
   return movieFromPayload(payload);
 }
 
-async function getMoviePage(query, env, fetchImpl) {
+async function getMoviePage(query, env, fetchImpl, token = "") {
   const startIndex = Math.max(0, Number(query.get("StartIndex") || 0));
   const limit = Math.min(100, Math.max(1, Number(query.get("Limit") || 32)));
   const page = Math.floor(startIndex / limit) + 1;
   const searchTerm = query.get("SearchTerm") || query.get("searchTerm") || "";
-  const payload = searchTerm
-    ? await javdbRequest("/v2/search", env, fetchImpl, {
-        query: { q: searchTerm, page, type: "movie", limit },
-      })
-    : await javdbRequest("/v1/movies/latest", env, fetchImpl, {
-        query: { page, filter_by: "all", limit },
-      });
-  const movies = moviesFromPayload(payload);
+  const requestedParentId = query.get("ParentId") || CHINESE_PLAYABLE_LIBRARY_ID;
+  const library = LIBRARIES.find((item) => item.id === requestedParentId) ||
+    LIBRARIES.find((item) => item.id === CHINESE_PLAYABLE_LIBRARY_ID);
+  const parentId = requestedParentId === ROOT_ID ? ROOT_ID : library.id;
+  if (searchTerm) {
+    const payload = await javdbRequest("/v2/search", env, fetchImpl, {
+      query: {
+        q: searchTerm,
+        page,
+        type: "movie",
+        movie_filter_by: "p",
+        limit,
+      },
+      token: apiToken(token, env),
+    });
+    const movies = moviesFromPayload(payload).filter(library.matches);
+    return {
+      Items: movies.map((movie) => mapMovie(
+        movie,
+        query.requestUrl || "https://localhost/",
+        env,
+        parentId,
+      )),
+      TotalRecordCount: Number(payload?.total_count || payload?.total || movies.length),
+      StartIndex: startIndex,
+    };
+  }
+
+  const requiredCount = startIndex + limit;
+  const matchingMovies = [];
+  let sourcePage = 1;
+  let hasMoreSource = true;
+
+  while (
+    matchingMovies.length < requiredCount &&
+    sourcePage <= HOME_MAX_SOURCE_PAGES &&
+    hasMoreSource
+  ) {
+    const payload = await javdbRequest("/v1/movies/latest", env, fetchImpl, {
+      query: {
+        page: sourcePage,
+        filter_by: library.sourceFilter,
+        limit: HOME_SOURCE_PAGE_SIZE,
+      },
+      token: apiToken(token, env),
+    });
+    const movies = moviesFromPayload(payload);
+    matchingMovies.push(...movies.filter(library.matches));
+    hasMoreSource = movies.length >= HOME_SOURCE_PAGE_SIZE;
+    sourcePage += 1;
+  }
+
+  const movies = matchingMovies.slice(startIndex, requiredCount);
+  const totalRecordCount = hasMoreSource
+    ? startIndex + movies.length + 1
+    : matchingMovies.length;
   return {
     Items: movies.map((movie) => mapMovie(
       movie,
       query.requestUrl || "https://localhost/",
       env,
+      parentId,
     )),
-    TotalRecordCount: Number(payload?.total_count || payload?.total || movies.length),
+    TotalRecordCount: totalRecordCount,
     StartIndex: startIndex,
   };
 }
@@ -417,7 +735,9 @@ async function resolveVideo(movie, env, fetchImpl) {
     fetchImpl,
   );
   const data = payload?.data || payload;
-  const variants = Array.isArray(data?.variants) ? data.variants : [];
+  const variants = Array.isArray(data?.variants)
+    ? data.variants.filter((item) => safeMediaUrl(item?.sourceUrl, env))
+    : [];
   const variant =
     variants.find((item) => item.variant === "original") || variants[0] || null;
   if (!variant?.sourceUrl) {
@@ -428,50 +748,170 @@ async function resolveVideo(movie, env, fetchImpl) {
     sourceUrl: variant.sourceUrl,
     sourceType: variant.sourceType || "video/mp4",
     title: variant.title || movie.title || movie.number || code,
+    quality: Number(variant.quality || 0),
   };
 }
 
-function mediaSource(item, requestUrl, token, video) {
+function subtitleCodec(subtitle) {
+  const value = String(subtitle?.ext || "srt").toLowerCase();
+  return /^[a-z0-9]+$/.test(value) ? value : "srt";
+}
+
+async function resolveSubtitles(movie, env, fetchImpl) {
+  const code = movie.number || movie.code || movie.title;
+  if (!code) {
+    return [];
+  }
+
+  const payload = await upstreamJson(
+    `/api/subtitle?name=${encodeURIComponent(code)}`,
+    env,
+    fetchImpl,
+  );
+  if (payload?.code !== undefined && Number(payload.code) !== 0) {
+    return [];
+  }
+
+  const rows = Array.isArray(payload?.data) ? payload.data : [];
+  const seen = new Set();
+  return rows.flatMap((subtitle) => {
+    const value = String(subtitle?.url || "");
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return [];
+    }
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return [];
+    }
+
+    const id = String(subtitle.cid || subtitle.gcid || value);
+    if (seen.has(id)) {
+      return [];
+    }
+    seen.add(id);
+    return [{
+      id,
+      url: url.toString(),
+      codec: subtitleCodec(subtitle),
+      title: String(subtitle.extra_name || subtitle.name || "中文字幕"),
+    }];
+  }).slice(0, 8);
+}
+
+function mediaSource(item, requestUrl, token, video, subtitles = []) {
+  const isHls = /mpegurl|m3u8/i.test(video.sourceType || video.sourceUrl);
+  const container = isHls ? "m3u8" : "mp4";
+  const height = Number(video.quality || 0);
+  const width = height > 0 ? Math.round((height * 16) / 9 / 2) * 2 : undefined;
   const streamUrl = new URL(
-    publicRoutePath(requestUrl, `/Videos/${encodeURIComponent(item.Id)}/stream`),
+    publicRoutePath(
+      requestUrl,
+      `/Videos/${encodeURIComponent(item.Id)}/stream.${container}`,
+    ),
     requestUrl,
   );
   streamUrl.searchParams.set("api_key", token);
-  const isHls = /mpegurl|m3u8/i.test(video.sourceType || video.sourceUrl);
+  streamUrl.searchParams.set("static", "true");
+  streamUrl.searchParams.set("mediaSourceId", item.Id);
+  if (video.sourceUrl) {
+    streamUrl.searchParams.set("source", video.sourceUrl);
+    streamUrl.searchParams.set("sourceType", video.sourceType || "video/mp4");
+  }
+  const subtitleStreams = subtitles.map((subtitle, index) => {
+    const streamIndex = index + 2;
+    const deliveryUrl = new URL(
+      publicRoutePath(
+        requestUrl,
+        `/Videos/${encodeURIComponent(item.Id)}/${encodeURIComponent(item.Id)}/Subtitles/${streamIndex}/Stream.${subtitle.codec}`,
+      ),
+      requestUrl,
+    );
+    deliveryUrl.searchParams.set("api_key", token);
+    return {
+      Type: "Subtitle",
+      Codec: subtitle.codec,
+      Language: "chi",
+      DisplayLanguage: "中文",
+      Title: subtitle.title,
+      DisplayTitle: index === 0 ? "中文字幕" : `中文字幕 ${index + 1}`,
+      Index: streamIndex,
+      IsDefault: index === 0,
+      IsForced: false,
+      IsExternal: true,
+      IsExternalUrl: false,
+      IsTextSubtitleStream: true,
+      SupportsExternalStream: true,
+      DeliveryMethod: "External",
+      DeliveryUrl: `${deliveryUrl.pathname}${deliveryUrl.search}`,
+    };
+  });
   return {
     Id: item.Id,
     Name: video.title,
     Path: streamUrl.toString(),
+    DirectStreamUrl: `${streamUrl.pathname}${streamUrl.search}`,
     Protocol: "Http",
     Type: "Default",
-    Container: isHls ? "m3u8" : "mp4",
+    Container: container,
+    VideoType: "VideoFile",
     IsRemote: true,
     SupportsDirectPlay: true,
     SupportsDirectStream: true,
     SupportsTranscoding: false,
+    SupportsProbing: false,
     RequiresOpening: false,
     RequiresClosing: false,
+    RequiredHttpHeaders: {},
     RunTimeTicks: item.RunTimeTicks,
+    DefaultAudioStreamIndex: 1,
+    DefaultSubtitleStreamIndex: subtitleStreams.length > 0 ? 2 : undefined,
     MediaStreams: [
       {
         Type: "Video",
         Codec: isHls ? "hls" : "h264",
+        CodecTag: isHls ? undefined : "avc1",
+        DisplayTitle: height > 0 ? `${height}p H264 SDR` : "H264 SDR",
         Index: 0,
+        Width: width,
+        Height: height || undefined,
+        AspectRatio: "16:9",
+        VideoRange: "SDR",
+        VideoRangeType: "SDR",
         IsInterlaced: false,
         IsAVC: !isHls,
+        IsAnamorphic: false,
         TimeBase: "1/10000000",
       },
+      {
+        Type: "Audio",
+        Codec: "aac",
+        CodecTag: "mp4a",
+        Language: "und",
+        DisplayLanguage: "Undetermined",
+        DisplayTitle: "AAC stereo",
+        Index: 1,
+        Channels: 2,
+        ChannelLayout: "stereo",
+        SampleRate: 48000,
+        IsDefault: true,
+        IsExternal: false,
+      },
+      ...subtitleStreams,
     ],
   };
 }
 
 function authenticationResponse(request, env, user, token) {
+  const sessionId = crypto.randomUUID();
   return jsonResponse({
     User: user,
     SessionInfo: {
-      Id: crypto.randomUUID(),
+      Id: sessionId,
       UserId: USER_ID,
       UserName: user.Name,
+      ServerId: serverId(env),
       Client: "Emby Compatible",
       DeviceName: "Emby Client",
       DeviceId: "bbjavdb-emby",
@@ -559,36 +999,103 @@ function systemInfo(requestUrl, env) {
   };
 }
 
-function rootView(env) {
+function rootItem(env) {
   return {
     Name: PRODUCT_NAME,
+    SortName: PRODUCT_NAME,
     ServerId: serverId(env),
     Id: ROOT_ID,
     Guid: ROOT_ID,
-    Type: "CollectionFolder",
-    CollectionType: "movies",
-    ChildCount: 32,
+    Type: "Folder",
+    ChildCount: LIBRARIES.length,
     DisplayPreferencesId: "usersettings",
     IsFolder: true,
     LocationType: "Virtual",
     ImageTags: {},
+    UserData: {
+      Played: false,
+      PlayCount: 0,
+      IsFavorite: false,
+      PlaybackPositionTicks: 0,
+    },
   };
 }
 
-async function itemResponse(id, request, env, fetchImpl) {
-  const movie = await getMovie(id, env, fetchImpl);
+function libraryView(library, env) {
+  return {
+    Name: library.name,
+    SortName: library.name,
+    ServerId: serverId(env),
+    ParentId: ROOT_ID,
+    Id: library.id,
+    Guid: library.id,
+    Type: "CollectionFolder",
+    CollectionType: "movies",
+    ChildCount: 32,
+    DisplayPreferencesId: `usersettings-${library.id}`,
+    IsFolder: true,
+    LocationType: "Virtual",
+    ImageTags: {},
+    UserData: {
+      Played: false,
+      PlayCount: 0,
+      IsFavorite: false,
+      PlaybackPositionTicks: 0,
+    },
+  };
+}
+
+function virtualFolder(library) {
+  return {
+    Name: library.name,
+    Locations: [],
+    CollectionType: "movies",
+    ItemId: library.id,
+    Id: library.id,
+    Guid: library.id,
+  };
+}
+
+async function itemResponse(id, request, env, fetchImpl, token) {
+  const movie = await getMovie(id, env, fetchImpl, token);
   if (!movie?.id && !movie?.number) {
     return errorResponse(404, "Movie not found");
   }
-  return jsonResponse(mapMovie(movie, request.url, env));
+
+  const item = mapMovie(movie, request.url, env);
+  const subtitles = hasChineseSubtitles(movie)
+    ? [{ codec: "srt", title: "中文字幕" }]
+    : [];
+  const source = mediaSource(
+    item,
+    request.url,
+    token || (guestAccessEnabled(env) ? guestToken(env) : ""),
+    {
+      sourceType: "video/mp4",
+      title: item.Name,
+      quality: 720,
+    },
+    subtitles,
+  );
+  item.Path = source.Path;
+  item.MediaSources = [source];
+  item.MediaStreams = source.MediaStreams;
+  item.MediaSourceCount = 1;
+  item.Container = source.Container;
+  item.HasSubtitles = subtitles.length > 0;
+  return jsonResponse(item);
+}
+
+function itemQuery(items, startIndex = 0) {
+  return {
+    Items: items,
+    TotalRecordCount: items.length,
+    StartIndex: startIndex,
+  };
 }
 
 function emptyItemQuery() {
-  return {
-    Items: [],
-    TotalRecordCount: 0,
-    StartIndex: 0,
-  };
+  return itemQuery([]);
 }
 
 function displayPreferences(url) {
@@ -620,18 +1127,21 @@ function noContentResponse() {
 
 function isEmbyClientRequest(request) {
   const url = new URL(request.url);
+  const authorization = request.headers.get("authorization") || "";
   return (
     url.pathname === "/emby" ||
     url.pathname.startsWith("/emby/") ||
     url.searchParams.has("api_key") ||
     url.searchParams.has("ApiKey") ||
     request.headers.has("x-emby-authorization") ||
-    request.headers.has("x-emby-token")
+    request.headers.has("x-emby-token") ||
+    request.headers.has("x-mediabrowser-token") ||
+    /^(?:MediaBrowser\b|Bearer\s+|Token\s*[=:])/i.test(authorization)
   );
 }
 
-async function imageResponse(id, request, env, fetchImpl) {
-  const movie = await getMovie(id, env, fetchImpl);
+async function imageResponse(id, request, env, fetchImpl, token) {
+  const movie = await getMovie(id, env, fetchImpl, token);
   const imageUrl = safeMediaUrl(movie?.cover_url || movie?.thumb_url, env);
   if (!imageUrl) {
     return errorResponse(404, "Movie image not found");
@@ -644,17 +1154,72 @@ async function imageResponse(id, request, env, fetchImpl) {
   if (!upstream.ok) {
     return errorResponse(404, "Movie image not found");
   }
+  const decoded = await decodeImageBody(upstream.body);
   const headers = new Headers({
     "cache-control": "public, max-age=3600",
     "access-control-allow-origin": "*",
+    "x-content-type-options": "nosniff",
   });
-  if (upstream.headers.get("content-type")) {
-    headers.set("content-type", upstream.headers.get("content-type"));
+  headers.set(
+    "content-type",
+    imageContentType(
+      imageUrl,
+      upstream.headers.get("content-type"),
+      decoded.contentType,
+    ),
+  );
+  for (const name of ["etag", "last-modified"]) {
+    const value = upstream.headers.get(name);
+    if (value) {
+      headers.set(name, value);
+    }
   }
-  return new Response(request.method === "HEAD" ? null : upstream.body, {
+  return new Response(request.method === "HEAD" ? null : decoded.body, {
     status: upstream.status,
     headers,
   });
+}
+
+async function subtitleResponse(id, index, request, env, fetchImpl, token) {
+  try {
+    const movie = await getMovie(id, env, fetchImpl, token);
+    const subtitles = await resolveSubtitles(movie, env, fetchImpl);
+    const subtitle = subtitles[index - 2] || subtitles[index - 1];
+    if (!subtitle) {
+      return errorResponse(404, "Movie subtitle not found");
+    }
+
+    const target = new URL("/api/subtitle/file", upstreamOrigin(env));
+    target.searchParams.set("url", subtitle.url);
+    const upstream = await fetchImpl(target.toString(), {
+      method: request.method,
+      headers: {
+        accept: "text/vtt,application/x-subrip,text/plain,*/*;q=0.8",
+        "user-agent": "Mozilla/5.0",
+      },
+      redirect: "follow",
+    });
+    if (!upstream.ok) {
+      return errorResponse(404, "Movie subtitle not found");
+    }
+
+    const contentType = subtitle.codec === "vtt"
+      ? "text/vtt; charset=utf-8"
+      : "application/x-subrip; charset=utf-8";
+    return new Response(request.method === "HEAD" ? null : upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: {
+        "access-control-allow-origin": "*",
+        "cache-control": "public, max-age=3600",
+        "content-disposition": `inline; filename="subtitle.${subtitle.codec}"`,
+        "content-type": contentType,
+        "x-content-type-options": "nosniff",
+      },
+    });
+  } catch (error) {
+    return errorResponse(502, error instanceof Error ? error.message : "Movie subtitle unavailable");
+  }
 }
 
 async function streamResponse(id, request, env, fetchImpl, token) {
@@ -663,17 +1228,32 @@ async function streamResponse(id, request, env, fetchImpl, token) {
   }
 
   try {
-    const movie = await getMovie(id, env, fetchImpl);
-    const video = await resolveVideo(movie, env, fetchImpl);
+    const requestUrl = new URL(request.url);
+    const suppliedSource = safeMediaUrl(requestUrl.searchParams.get("source"), env);
+    const video = suppliedSource
+      ? {
+          sourceUrl: suppliedSource.toString(),
+          sourceType: safeMediaContentType(requestUrl.searchParams.get("sourceType")),
+        }
+      : await resolveVideo(
+          await getMovie(id, env, fetchImpl, token),
+          env,
+          fetchImpl,
+        );
     const sourceUrl = safeMediaUrl(video?.sourceUrl, env);
     if (!video || !sourceUrl) {
       return errorResponse(404, "No playable video source was found");
     }
 
-    const headers = new Headers();
-    const range = request.headers.get("range");
-    if (range) {
-      headers.set("range", range);
+    const headers = new Headers({
+      accept: request.headers.get("accept") || "video/*,*/*;q=0.8",
+      "user-agent": "Mozilla/5.0",
+    });
+    for (const name of ["range", "if-range", "if-none-match", "if-modified-since"]) {
+      const value = request.headers.get(name);
+      if (value) {
+        headers.set(name, value);
+      }
     }
     const upstream = await fetchImpl(sourceUrl.toString(), {
       method: request.method,
@@ -682,7 +1262,10 @@ async function streamResponse(id, request, env, fetchImpl, token) {
     });
     const responseHeaders = new Headers({
       "access-control-allow-origin": "*",
+      "access-control-expose-headers": "Accept-Ranges, Content-Length, Content-Range, Content-Type, ETag, Last-Modified",
       "cache-control": "no-store",
+      "content-disposition": `inline; filename="${encodeURIComponent(id)}.${/mpegurl|m3u8/i.test(video.sourceType || video.sourceUrl) ? "m3u8" : "mp4"}"`,
+      "x-content-type-options": "nosniff",
     });
     for (const name of [
       "accept-ranges",
@@ -724,8 +1307,10 @@ function isHandledPath(path) {
     path === "/Users/bbjavdb-user" ||
     path === "/Users/bbjavdb-user/Views" ||
     path === "/Library/VirtualFolders" ||
+    path === "/Library/VirtualFolders/Query" ||
     path === "/Library/MediaFolders" ||
     path === "/Items" ||
+    path === "/Items/Root" ||
     path === "/Items/Latest" ||
     path === "/Items/Resume" ||
     path === "/Items/Filters" ||
@@ -757,6 +1342,7 @@ function isHandledPath(path) {
     /^\/Users\/[^/]+$/i.test(path) ||
     /^\/Users\/[^/]+\/GroupingOptions$/i.test(path) ||
     /^\/Users\/[^/]+\/Views$/i.test(path) ||
+    /^\/Users\/[^/]+\/Suggestions$/i.test(path) ||
     /^\/Users\/[^/]+\/Items(?:\/|$)/i.test(path) ||
     path.startsWith("/Items/") ||
     path.startsWith("/Videos/") ||
@@ -767,6 +1353,9 @@ function isHandledPath(path) {
 export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   const url = new URL(request.url);
   const requestPath = routePath(request.url);
+  if (requestPath === "/" && /^\/emby\/?$/i.test(url.pathname)) {
+    return jsonResponse(systemInfo(request.url, env));
+  }
   if (!isHandledPath(requestPath)) {
     if (isEmbyClientRequest(request)) {
       console.error(JSON.stringify({
@@ -816,10 +1405,20 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
     return jsonResponse([]);
   }
   if (/^\/Users\/[^/]+\/Views$/i.test(path) || path === "/UserViews") {
-    return jsonResponse({ Items: [rootView(env)] });
+    return jsonResponse(itemQuery(
+      LIBRARIES.map((library) => libraryView(library, env)),
+    ));
   }
-  if (path === "/Library/VirtualFolders" || path === "/Library/MediaFolders") {
-    return jsonResponse([rootView(env)]);
+  if (path === "/Library/MediaFolders") {
+    return jsonResponse(itemQuery(
+      LIBRARIES.map((library) => libraryView(library, env)),
+    ));
+  }
+  if (path === "/Library/VirtualFolders") {
+    return jsonResponse(LIBRARIES.map(virtualFolder));
+  }
+  if (path === "/Library/VirtualFolders/Query") {
+    return jsonResponse(itemQuery(LIBRARIES.map(virtualFolder)));
   }
   if (path === "/Sessions") {
     return jsonResponse([]);
@@ -839,11 +1438,14 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   }
 
   const token = getToken(request, url);
+  if (path === "/Items/Root") {
+    return jsonResponse(rootItem(env));
+  }
   if (path === "/Items") {
     try {
       const query = new URLSearchParams(url.search);
       query.requestUrl = request.url;
-      const result = await getMoviePage(query, env, fetchImpl);
+      const result = await getMoviePage(query, env, fetchImpl, token);
       result.Items = result.Items.map((item) => ({ ...item, Path: item.Path }));
       return jsonResponse(result);
     } catch (error) {
@@ -855,7 +1457,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
       const query = new URLSearchParams(url.search);
       query.set("StartIndex", "0");
       query.requestUrl = request.url;
-      const result = await getMoviePage(query, env, fetchImpl);
+      const result = await getMoviePage(query, env, fetchImpl, token);
       return jsonResponse(result.Items);
     } catch (error) {
       return errorResponse(502, error instanceof Error ? error.message : "Latest movies unavailable");
@@ -904,7 +1506,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   }
   if (path === "/SearchHints") {
     try {
-      const result = await getMoviePage(new URLSearchParams(`SearchTerm=${encodeURIComponent(url.searchParams.get("SearchTerm") || "")}`), env, fetchImpl);
+      const result = await getMoviePage(new URLSearchParams(`SearchTerm=${encodeURIComponent(url.searchParams.get("SearchTerm") || "")}`), env, fetchImpl, token);
       return jsonResponse({
         SearchHints: result.Items.map((item) => ({
           ItemId: item.Id,
@@ -924,7 +1526,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   const imageMatch = path.match(/^\/Items\/([^/]+)\/Images\/Primary$/i);
   if (imageMatch) {
     try {
-      return await imageResponse(decodeURIComponent(imageMatch[1]), request, env, fetchImpl);
+      return await imageResponse(decodeURIComponent(imageMatch[1]), request, env, fetchImpl, token);
     } catch (error) {
       return errorResponse(502, error instanceof Error ? error.message : "Movie image unavailable");
     }
@@ -933,9 +1535,12 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   const playbackMatch = path.match(/^\/Items\/([^/]+)\/PlaybackInfo$/i);
   if (playbackMatch) {
     try {
-      const movie = await getMovie(decodeURIComponent(playbackMatch[1]), env, fetchImpl);
+      const movie = await getMovie(decodeURIComponent(playbackMatch[1]), env, fetchImpl, token);
       const item = mapMovie(movie, request.url, env);
-      const video = await resolveVideo(movie, env, fetchImpl);
+      const [video, subtitles] = await Promise.all([
+        resolveVideo(movie, env, fetchImpl),
+        resolveSubtitles(movie, env, fetchImpl).catch(() => []),
+      ]);
       if (!video) {
         return jsonResponse({ PlaySessionId: crypto.randomUUID(), MediaSources: [] });
       }
@@ -948,6 +1553,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
             request.url,
             token || (guestAccessEnabled(env) ? guestToken(env) : ""),
             video,
+            subtitles,
           ),
         ],
       });
@@ -959,13 +1565,27 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   const itemMatch = path.match(/^\/Items\/([^/]+)$/i);
   if (itemMatch) {
     try {
-      return await itemResponse(decodeURIComponent(itemMatch[1]), request, env, fetchImpl);
+      return await itemResponse(decodeURIComponent(itemMatch[1]), request, env, fetchImpl, token);
     } catch (error) {
       return errorResponse(502, error instanceof Error ? error.message : "Movie metadata unavailable");
     }
   }
 
-  const streamMatch = path.match(/^\/Videos\/([^/]+)\/stream(?:\.mp4)?$/i);
+  const subtitleMatch = path.match(
+    /^\/Videos\/([^/]+)\/[^/]+\/Subtitles\/(\d+)\/Stream\.[a-z0-9]+$/i,
+  );
+  if (subtitleMatch) {
+    return subtitleResponse(
+      decodeURIComponent(subtitleMatch[1]),
+      Number(subtitleMatch[2]),
+      request,
+      env,
+      fetchImpl,
+      token,
+    );
+  }
+
+  const streamMatch = path.match(/^\/Videos\/([^/]+)\/stream(?:\.[a-z0-9]+)?$/i);
   if (streamMatch) {
     return streamResponse(
       decodeURIComponent(streamMatch[1]),

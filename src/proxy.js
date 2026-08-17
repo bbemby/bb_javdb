@@ -6,6 +6,7 @@ export const DEFAULT_UPSTREAM_ORIGIN =
 export const MEDIA_PROXY_PREFIX = "/__media/";
 
 const DEFAULT_MEDIA_HOSTS = new Set([
+  "fast-stream.jav.si",
   "jdforrepam.com",
   "tp.spfcas.com",
   "h1.gzankun.com",
