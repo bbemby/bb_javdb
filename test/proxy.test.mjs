@@ -407,6 +407,99 @@ test("returns JSON placeholders for optional Emby home sections", async () => {
   }
 });
 
+test("serves Emby display preferences that enable latest media", async () => {
+  const response = await handleProxy(
+    new Request(
+      "https://clone.example/emby/DisplayPreferences/usersettings?UserId=bbjavdb-user&Client=Forward",
+    ),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.UserId, "bbjavdb-user");
+  assert.equal(payload.Client, "Forward");
+  assert.equal(payload.Configuration.homesection0, "latestmedia");
+});
+
+test("supports common Emby client bootstrap and session endpoints", async () => {
+  const me = await handleProxy(
+    new Request("https://clone.example/emby/Users/Me"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+  const endpoint = await handleProxy(
+    new Request("https://clone.example/emby/System/Endpoint"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+  const capabilities = await handleProxy(
+    new Request("https://clone.example/emby/Sessions/Capabilities/Full", {
+      method: "POST",
+    }),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  assert.equal(me.status, 200);
+  assert.equal((await me.json()).Id, "bbjavdb-user");
+  assert.deepEqual(await endpoint.json(), { IsLocal: false, IsInNetwork: false });
+  assert.equal(capabilities.status, 204);
+});
+
+test("advertises a non-empty virtual movie library", async () => {
+  const views = await handleProxy(
+    new Request("https://clone.example/emby/Users/bbjavdb-user/Views"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+  const counts = await handleProxy(
+    new Request("https://clone.example/emby/Items/Counts"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  const viewsPayload = await views.json();
+  const countsPayload = await counts.json();
+  assert.equal(viewsPayload.Items[0].ChildCount, 32);
+  assert.equal(countsPayload.MovieCount, 32);
+  assert.equal(countsPayload.ItemCount, 32);
+});
+
+test("returns JSON errors for unknown Emby routes instead of proxying HTML", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/Unknown/Endpoint"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  assert.equal(response.status, 404);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.equal((await response.json()).Message, "Emby endpoint not found");
+});
+
 test("authenticates Emby users against JavDB and returns an access token", async () => {
   let receivedBody;
   const response = await handleProxy(

@@ -567,6 +567,8 @@ function rootView(env) {
     Guid: ROOT_ID,
     Type: "CollectionFolder",
     CollectionType: "movies",
+    ChildCount: 32,
+    DisplayPreferencesId: "usersettings",
     IsFolder: true,
     LocationType: "Virtual",
     ImageTags: {},
@@ -587,6 +589,45 @@ function emptyItemQuery() {
     TotalRecordCount: 0,
     StartIndex: 0,
   };
+}
+
+function displayPreferences(url) {
+  return {
+    Id: "usersettings",
+    UserId: url.searchParams.get("UserId") || USER_ID,
+    Client: url.searchParams.get("Client") || "emby",
+    Configuration: {
+      homesection0: "latestmedia",
+      homesection1: "resume",
+      homesection2: "none",
+      homesection3: "none",
+      homesection4: "none",
+      homesection5: "none",
+    },
+    CustomPrefs: {},
+  };
+}
+
+function noContentResponse() {
+  return new Response(null, {
+    status: 204,
+    headers: {
+      "access-control-allow-origin": "*",
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function isEmbyClientRequest(request) {
+  const url = new URL(request.url);
+  return (
+    url.pathname === "/emby" ||
+    url.pathname.startsWith("/emby/") ||
+    url.searchParams.has("api_key") ||
+    url.searchParams.has("ApiKey") ||
+    request.headers.has("x-emby-authorization") ||
+    request.headers.has("x-emby-token")
+  );
 }
 
 async function imageResponse(id, request, env, fetchImpl) {
@@ -674,9 +715,12 @@ function isHandledPath(path) {
   return (
     path === "/System/Info/Public" ||
     path === "/System/Info" ||
+    path === "/System/Endpoint" ||
+    path === "/System/Configuration" ||
     path === "/Users/Public" ||
     path === "/Users/AuthenticateByName" ||
     path === "/Users" ||
+    path === "/Users/Me" ||
     path === "/Users/bbjavdb-user" ||
     path === "/Users/bbjavdb-user/Views" ||
     path === "/Library/VirtualFolders" ||
@@ -695,8 +739,23 @@ function isHandledPath(path) {
     path === "/Persons" ||
     path === "/SearchHints" ||
     path === "/Sessions" ||
+    path === "/Sessions/Capabilities" ||
+    path === "/Sessions/Capabilities/Full" ||
+    path === "/Sessions/Viewing" ||
+    path === "/Sessions/Playing" ||
+    path === "/Sessions/Playing/Progress" ||
+    path === "/Sessions/Playing/Stopped" ||
+    path === "/DisplayPreferences/usersettings" ||
     path === "/Branding/Configuration" ||
     path === "/Startup/Configuration" ||
+    path === "/Items/Counts" ||
+    path === "/Suggestions" ||
+    path === "/LiveTv/Programs/Recommended" ||
+    path === "/Channels" ||
+    path === "/Trailers" ||
+    path === "/Artists/AlbumArtists" ||
+    /^\/Users\/[^/]+$/i.test(path) ||
+    /^\/Users\/[^/]+\/GroupingOptions$/i.test(path) ||
     /^\/Users\/[^/]+\/Views$/i.test(path) ||
     /^\/Users\/[^/]+\/Items(?:\/|$)/i.test(path) ||
     path.startsWith("/Items/") ||
@@ -709,6 +768,14 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   const url = new URL(request.url);
   const requestPath = routePath(request.url);
   if (!isHandledPath(requestPath)) {
+    if (isEmbyClientRequest(request)) {
+      console.error(JSON.stringify({
+        message: "Unhandled Emby endpoint",
+        method: request.method,
+        path: requestPath,
+      }));
+      return errorResponse(404, "Emby endpoint not found");
+    }
     return null;
   }
   const path = normalizeClientPath(requestPath);
@@ -727,6 +794,12 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   if (path === "/System/Info/Public" || path === "/System/Info") {
     return jsonResponse(systemInfo(request.url, env));
   }
+  if (path === "/System/Endpoint") {
+    return jsonResponse({ IsLocal: false, IsInNetwork: false });
+  }
+  if (path === "/System/Configuration") {
+    return jsonResponse({ EnableFolderView: true });
+  }
   if (path === "/Branding/Configuration" || path === "/Startup/Configuration") {
     return jsonResponse({});
   }
@@ -736,8 +809,11 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   if (path === "/Users/AuthenticateByName") {
     return authenticate(request, env, fetchImpl);
   }
-  if (path === "/Users/bbjavdb-user") {
+  if (path === "/Users/Me" || /^\/Users\/[^/]+$/i.test(path)) {
     return jsonResponse(virtualUser(env));
+  }
+  if (/^\/Users\/[^/]+\/GroupingOptions$/i.test(path)) {
+    return jsonResponse([]);
   }
   if (/^\/Users\/[^/]+\/Views$/i.test(path) || path === "/UserViews") {
     return jsonResponse({ Items: [rootView(env)] });
@@ -747,6 +823,19 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   }
   if (path === "/Sessions") {
     return jsonResponse([]);
+  }
+  if (path === "/DisplayPreferences/usersettings") {
+    return jsonResponse(displayPreferences(url));
+  }
+  if (
+    path === "/Sessions/Capabilities" ||
+    path === "/Sessions/Capabilities/Full" ||
+    path === "/Sessions/Viewing" ||
+    path === "/Sessions/Playing" ||
+    path === "/Sessions/Playing/Progress" ||
+    path === "/Sessions/Playing/Stopped"
+  ) {
+    return noContentResponse();
   }
 
   const token = getToken(request, url);
@@ -787,6 +876,31 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   }
   if (path === "/Items/Filters" || path === "/Items/Filters2") {
     return jsonResponse({ Genres: [], Tags: [], OfficialRatings: [], Years: [] });
+  }
+  if (path === "/Items/Counts") {
+    return jsonResponse({
+      MovieCount: 32,
+      SeriesCount: 0,
+      EpisodeCount: 0,
+      ArtistCount: 0,
+      ProgramCount: 0,
+      TrailerCount: 0,
+      SongCount: 0,
+      AlbumCount: 0,
+      MusicVideoCount: 0,
+      BoxSetCount: 0,
+      BookCount: 0,
+      ItemCount: 32,
+    });
+  }
+  if (
+    path === "/Suggestions" ||
+    path === "/LiveTv/Programs/Recommended" ||
+    path === "/Channels" ||
+    path === "/Trailers" ||
+    path === "/Artists/AlbumArtists"
+  ) {
+    return jsonResponse(emptyItemQuery());
   }
   if (path === "/SearchHints") {
     try {
