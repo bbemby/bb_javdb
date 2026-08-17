@@ -218,6 +218,10 @@ function routePath(requestUrl) {
   return path.startsWith("/emby/") ? path.slice("/emby".length) : path;
 }
 
+function normalizeClientPath(path) {
+  return path.replace(/^\/Users\/[^/]+\/Items(?=\/|$)/i, "/Items");
+}
+
 function publicRoutePath(requestUrl, path) {
   const requestPath = new URL(requestUrl).pathname;
   return requestPath.startsWith("/emby/") ? `/emby${path}` : path;
@@ -310,7 +314,7 @@ function tagName(tag) {
   return typeof tag === "string" ? tag : tag?.name || "";
 }
 
-function mapMovie(movie, requestUrl) {
+function mapMovie(movie, requestUrl, env = {}) {
   const id = String(movie.id ?? movie.number ?? "");
   const image = movie.cover_url || movie.thumb_url || "";
   const date = movie.release_date || movie.released_at || "";
@@ -324,8 +328,11 @@ function mapMovie(movie, requestUrl) {
   }));
   const item = {
     Id: id,
+    ServerId: serverId(env),
+    ParentId: ROOT_ID,
     Name: movie.title || movie.number || id,
     OriginalTitle: movie.title || movie.number || id,
+    SortName: movie.title || movie.number || id,
     Type: "Movie",
     IsFolder: false,
     CanDelete: false,
@@ -339,6 +346,8 @@ function mapMovie(movie, requestUrl) {
     Genres: tags,
     People: actors,
     ImageTags: image ? { Primary: "1" } : {},
+    BackdropImageTags: [],
+    PrimaryImageAspectRatio: image ? 0.667 : undefined,
     ProviderIds: { JavDB: id },
     UserData: {
       Played: false,
@@ -386,7 +395,11 @@ async function getMoviePage(query, env, fetchImpl) {
       });
   const movies = moviesFromPayload(payload);
   return {
-    Items: movies.map((movie) => mapMovie(movie, query.requestUrl || "https://localhost/")),
+    Items: movies.map((movie) => mapMovie(
+      movie,
+      query.requestUrl || "https://localhost/",
+      env,
+    )),
     TotalRecordCount: Number(payload?.total_count || payload?.total || movies.length),
     StartIndex: startIndex,
   };
@@ -565,7 +578,15 @@ async function itemResponse(id, request, env, fetchImpl) {
   if (!movie?.id && !movie?.number) {
     return errorResponse(404, "Movie not found");
   }
-  return jsonResponse(mapMovie(movie, request.url));
+  return jsonResponse(mapMovie(movie, request.url, env));
+}
+
+function emptyItemQuery() {
+  return {
+    Items: [],
+    TotalRecordCount: 0,
+    StartIndex: 0,
+  };
 }
 
 async function imageResponse(id, request, env, fetchImpl) {
@@ -661,11 +682,23 @@ function isHandledPath(path) {
     path === "/Library/VirtualFolders" ||
     path === "/Library/MediaFolders" ||
     path === "/Items" ||
+    path === "/Items/Latest" ||
+    path === "/Items/Resume" ||
+    path === "/Items/Filters" ||
+    path === "/Items/Filters2" ||
+    path === "/UserViews" ||
+    path === "/Shows/NextUp" ||
+    path === "/Shows/Upcoming" ||
+    path === "/Movies/Recommendations" ||
+    path === "/Genres" ||
+    path === "/Studios" ||
+    path === "/Persons" ||
     path === "/SearchHints" ||
     path === "/Sessions" ||
     path === "/Branding/Configuration" ||
     path === "/Startup/Configuration" ||
-    path.startsWith("/Users/bbjavdb-user/Items") ||
+    /^\/Users\/[^/]+\/Views$/i.test(path) ||
+    /^\/Users\/[^/]+\/Items(?:\/|$)/i.test(path) ||
     path.startsWith("/Items/") ||
     path.startsWith("/Videos/") ||
     path.startsWith("/emby-media/")
@@ -674,10 +707,11 @@ function isHandledPath(path) {
 
 export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   const url = new URL(request.url);
-  const path = routePath(request.url);
-  if (!isHandledPath(path)) {
+  const requestPath = routePath(request.url);
+  if (!isHandledPath(requestPath)) {
     return null;
   }
+  const path = normalizeClientPath(requestPath);
 
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -705,7 +739,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   if (path === "/Users/bbjavdb-user") {
     return jsonResponse(virtualUser(env));
   }
-  if (path === "/Users/bbjavdb-user/Views") {
+  if (/^\/Users\/[^/]+\/Views$/i.test(path) || path === "/UserViews") {
     return jsonResponse({ Items: [rootView(env)] });
   }
   if (path === "/Library/VirtualFolders" || path === "/Library/MediaFolders") {
@@ -716,7 +750,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   }
 
   const token = getToken(request, url);
-  if (path === "/Items" || path === "/Users/bbjavdb-user/Items") {
+  if (path === "/Items") {
     try {
       const query = new URLSearchParams(url.search);
       query.requestUrl = request.url;
@@ -726,6 +760,33 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
     } catch (error) {
       return errorResponse(502, error instanceof Error ? error.message : "Movie catalog unavailable");
     }
+  }
+  if (path === "/Items/Latest") {
+    try {
+      const query = new URLSearchParams(url.search);
+      query.set("StartIndex", "0");
+      query.requestUrl = request.url;
+      const result = await getMoviePage(query, env, fetchImpl);
+      return jsonResponse(result.Items);
+    } catch (error) {
+      return errorResponse(502, error instanceof Error ? error.message : "Latest movies unavailable");
+    }
+  }
+  if (
+    path === "/Items/Resume" ||
+    path === "/Shows/NextUp" ||
+    path === "/Shows/Upcoming" ||
+    path === "/Genres" ||
+    path === "/Studios" ||
+    path === "/Persons"
+  ) {
+    return jsonResponse(emptyItemQuery());
+  }
+  if (path === "/Movies/Recommendations") {
+    return jsonResponse([]);
+  }
+  if (path === "/Items/Filters" || path === "/Items/Filters2") {
+    return jsonResponse({ Genres: [], Tags: [], OfficialRatings: [], Years: [] });
   }
   if (path === "/SearchHints") {
     try {
@@ -759,7 +820,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   if (playbackMatch) {
     try {
       const movie = await getMovie(decodeURIComponent(playbackMatch[1]), env, fetchImpl);
-      const item = mapMovie(movie, request.url);
+      const item = mapMovie(movie, request.url, env);
       const video = await resolveVideo(movie, env, fetchImpl);
       if (!video) {
         return jsonResponse({ PlaySessionId: crypto.randomUUID(), MediaSources: [] });

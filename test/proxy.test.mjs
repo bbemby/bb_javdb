@@ -351,7 +351,60 @@ test("maps JavDB movies into an Emby item list", async () => {
   assert.equal(payload.Items[0].Id, "42");
   assert.equal(payload.Items[0].Name, "Test Movie");
   assert.equal(payload.Items[0].Type, "Movie");
+  assert.equal(payload.Items[0].ServerId, "bbjavdb-emby");
+  assert.equal(payload.Items[0].ParentId, "bbjavdb-root");
   assert.deepEqual(payload.Items[0].Genres, ["Drama"]);
+});
+
+test("maps the user-scoped latest route into an Emby item array", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/Users/bbjavdb-user/Items/Latest?Limit=1"),
+    {},
+    {},
+    async (url) => {
+      assert.match(url, /jdforrepam\.com\/api\/v1\/movies\/latest/);
+      return new Response(
+        JSON.stringify({
+          success: 1,
+          data: {
+            movies: [{ id: 42, number: "TEST-001", title: "Latest Movie" }],
+          },
+        }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(Array.isArray(payload), true);
+  assert.equal(payload[0].Name, "Latest Movie");
+  assert.match(payload[0].Path, /\/emby\/Items\/42$/);
+});
+
+test("returns JSON placeholders for optional Emby home sections", async () => {
+  const paths = [
+    "/emby/Users/bbjavdb-user/Items/Resume",
+    "/emby/Shows/NextUp",
+    "/emby/Shows/Upcoming",
+    "/emby/Genres",
+    "/emby/Studios",
+    "/emby/Persons",
+  ];
+
+  for (const path of paths) {
+    const response = await handleProxy(
+      new Request(`https://clone.example${path}`),
+      {},
+      {},
+      () => {
+        throw new Error("fetch must not be called");
+      },
+    );
+    const payload = await response.json();
+    assert.equal(response.status, 200, path);
+    assert.deepEqual(payload.Items, [], path);
+  }
 });
 
 test("authenticates Emby users against JavDB and returns an access token", async () => {
