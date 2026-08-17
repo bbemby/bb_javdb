@@ -1,0 +1,17 @@
+{
+  "name": "catemby-legacy-cloudflare-proxy",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "dev:node": "node scripts/dev-node.mjs",
+    "dev:pages": "wrangler pages dev public --compatibility-date=2026-08-16",
+    "deploy": "wrangler deploy",
+    "deploy:pages": "wrangler pages deploy public --project-name=catemby-legacy-clone",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "^4.30.0"
+  }
+}
