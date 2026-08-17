@@ -6,6 +6,7 @@ const SIGNATURE_SECRET =
 const ROOT_ID = "bbjavdb-root";
 const USER_ID = "bbjavdb-user";
 const PRODUCT_NAME = "步兵JAVDB";
+const DEFAULT_GUEST_TOKEN = "bbjavdb-guest";
 
 const MEDIA_HOSTS = new Set([
   "jdforrepam.com",
@@ -226,14 +227,23 @@ function serverId(env) {
   return String(env.EMBY_SERVER_ID || "bbjavdb-emby");
 }
 
-function virtualUser() {
+function guestAccessEnabled(env) {
+  const value = String(env.EMBY_GUEST_ACCESS ?? "true").trim().toLowerCase();
+  return !["0", "false", "no", "off"].includes(value);
+}
+
+function guestToken(env) {
+  return String(env.EMBY_GUEST_TOKEN || DEFAULT_GUEST_TOKEN);
+}
+
+function virtualUser(env = {}, name = "JAVDB Guest", hasPassword = false) {
   return {
     Id: USER_ID,
-    Name: "JAVDB User",
-    ServerId: "",
-    HasPassword: true,
-    HasConfiguredPassword: true,
-    EnableAutoLogin: false,
+    Name: name,
+    ServerId: serverId(env),
+    HasPassword: hasPassword,
+    HasConfiguredPassword: hasPassword,
+    EnableAutoLogin: !hasPassword,
     Configuration: {
       PlayDefaultAudioTrack: true,
       SubtitleLanguagePreference: "zh-CN",
@@ -442,6 +452,26 @@ function mediaSource(item, requestUrl, token, video) {
   };
 }
 
+function authenticationResponse(request, env, user, token) {
+  return jsonResponse({
+    User: user,
+    SessionInfo: {
+      Id: crypto.randomUUID(),
+      UserId: USER_ID,
+      UserName: user.Name,
+      Client: "Emby Compatible",
+      DeviceName: "Emby Client",
+      DeviceId: "bbjavdb-emby",
+      ApplicationVersion: "1.0.0",
+      RemoteEndPoint: new URL(request.url).hostname,
+      PlayState: {},
+      AdditionalUsers: [],
+    },
+    AccessToken: token,
+    ServerId: serverId(env),
+  });
+}
+
 async function authenticate(request, env, fetchImpl) {
   let input = {};
   try {
@@ -459,6 +489,14 @@ async function authenticate(request, env, fetchImpl) {
   const username = String(input.Username || input.username || url.searchParams.get("username") || "").trim();
   const password = String(input.Pw || input.Password || input.password || url.searchParams.get("password") || "");
   if (!username || !password) {
+    if (guestAccessEnabled(env)) {
+      return authenticationResponse(
+        request,
+        env,
+        virtualUser(env),
+        guestToken(env),
+      );
+    }
     return errorResponse(401, "JavDB username and password are required");
   }
 
@@ -484,26 +522,12 @@ async function authenticate(request, env, fetchImpl) {
       return errorResponse(401, "JavDB authentication failed");
     }
 
-    const user = virtualUser();
-    user.Name = data?.user?.username || username;
-    user.ServerId = serverId(env);
-    return jsonResponse({
-      User: user,
-      SessionInfo: {
-        Id: crypto.randomUUID(),
-        UserId: USER_ID,
-        UserName: user.Name,
-        Client: "Emby Compatible",
-        DeviceName: "Emby Client",
-        DeviceId: "bbjavdb-emby",
-        ApplicationVersion: "1.0.0",
-        RemoteEndPoint: new URL(request.url).hostname,
-        PlayState: {},
-        AdditionalUsers: [],
-      },
-      AccessToken: token,
-      ServerId: serverId(env),
-    });
+    const user = virtualUser(
+      env,
+      data?.user?.username || username,
+      true,
+    );
+    return authenticationResponse(request, env, user, token);
   } catch (error) {
     return errorResponse(401, error instanceof Error ? error.message : "JavDB authentication failed");
   }
@@ -572,7 +596,7 @@ async function imageResponse(id, request, env, fetchImpl) {
 }
 
 async function streamResponse(id, request, env, fetchImpl, token) {
-  if (!token) {
+  if (!token && !guestAccessEnabled(env)) {
     return errorResponse(401, "Emby token is required for playback");
   }
 
@@ -673,13 +697,13 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
     return jsonResponse({});
   }
   if (path === "/Users/Public" || path === "/Users") {
-    return jsonResponse([virtualUser()]);
+    return jsonResponse([virtualUser(env)]);
   }
   if (path === "/Users/AuthenticateByName") {
     return authenticate(request, env, fetchImpl);
   }
   if (path === "/Users/bbjavdb-user") {
-    return jsonResponse(virtualUser());
+    return jsonResponse(virtualUser(env));
   }
   if (path === "/Users/bbjavdb-user/Views") {
     return jsonResponse({ Items: [rootView(env)] });
@@ -743,7 +767,14 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
       return jsonResponse({
         PlaySessionId: crypto.randomUUID(),
         ItemId: item.Id,
-        MediaSources: [mediaSource(item, request.url, token, video)],
+        MediaSources: [
+          mediaSource(
+            item,
+            request.url,
+            token || (guestAccessEnabled(env) ? guestToken(env) : ""),
+            video,
+          ),
+        ],
       });
     } catch (error) {
       return errorResponse(502, error instanceof Error ? error.message : "Playback metadata unavailable");

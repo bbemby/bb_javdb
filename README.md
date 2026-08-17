@@ -196,6 +196,8 @@ npx wrangler deploy --dry-run
 | `UPSTREAM_ORIGIN` | `https://catembylegacy.fastcdn.dpdns.org` | 上游站点根地址，只允许 `http` 或 `https` |
 | `JAVDB_API_ORIGIN` | `https://jdforrepam.com/api` | Emby 元数据和登录使用的 JAVDB API 根地址 |
 | `EMBY_SERVER_ID` | `bbjavdb-emby` | 返回给客户端的虚拟服务器 ID，改动后客户端可能需要重新添加服务器 |
+| `EMBY_GUEST_ACCESS` | `true` | 是否允许 Emby 客户端免账号密码登录 |
+| `EMBY_GUEST_TOKEN` | `bbjavdb-guest` | 访客播放会话使用的本地令牌 |
 | `EXTRA_MEDIA_HOSTS` | 空 | 额外允许代理的媒体域名，多个域名用英文逗号分隔 |
 | `PROXY_EXTERNAL_MEDIA` | `false` | 是否把白名单外部资源改写到同源媒体代理 |
 
@@ -229,7 +231,7 @@ PROXY_EXTERNAL_MEDIA=false
 部署完成后，在 Emby 客户端添加服务器：
 
 1. 服务器地址填写部署后的域名，例如 `https://your-worker.example.com`，不要把 `/emby` 作为必填前缀；兼容层同时接受根路径和 `/emby` 路径。
-2. 用户名和密码填写你自己的 JAVDB 账号。登录请求只用于向上游换取会话令牌，不会写入 Worker 环境变量。
+2. 用户名和密码默认留空。兼容层会创建无密码的 `JAVDB Guest` 用户并自动签发本地访客令牌；只有需要验证 JAVDB 账号时才填写账号密码。
 3. 进入“步兵JAVDB”虚拟电影库，选择影片即可查看标题、日期、简介、标签、演员和封面；点击播放时客户端会先请求 `PlaybackInfo`，随后访问 `/Videos/{id}/stream`。
 
 支持的主要接口包括：`/System/Info/Public`、`/Users/AuthenticateByName`、`/Users/{id}/Views`、`/Items`、`/Items/{id}`、`/Items/{id}/Images/Primary`、`/Items/{id}/PlaybackInfo` 和 `/Videos/{id}/stream`。这些接口也覆盖了大多数 Emby 手机、桌面和电视客户端的首次连接流程。

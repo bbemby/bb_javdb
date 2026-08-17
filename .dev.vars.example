@@ -1,5 +1,7 @@
 UPSTREAM_ORIGIN=https://catembylegacy.fastcdn.dpdns.org
 # JAVDB_API_ORIGIN=https://jdforrepam.com/api
 # EMBY_SERVER_ID=bbjavdb-emby
+EMBY_GUEST_ACCESS=true
+# EMBY_GUEST_TOKEN=bbjavdb-guest
 # EXTRA_MEDIA_HOSTS=another-media.example.com
 # PROXY_EXTERNAL_MEDIA=false

@@ -5,6 +5,7 @@
   "compatibility_date": "2026-08-16",
   "workers_dev": true,
   "vars": {
-    "UPSTREAM_ORIGIN": "https://catembylegacy.fastcdn.dpdns.org"
+    "UPSTREAM_ORIGIN": "https://catembylegacy.fastcdn.dpdns.org",
+    "EMBY_GUEST_ACCESS": "true"
   }
 }

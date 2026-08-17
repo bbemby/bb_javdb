@@ -264,6 +264,58 @@ test("serves Emby system metadata without contacting the upstream", async () => 
   assert.equal((await response.json()).ProductName, "Emby Compatible Server");
 });
 
+test("advertises an auto-login Emby guest without a password", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/Users/Public"),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  const [user] = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(user.Name, "JAVDB Guest");
+  assert.equal(user.HasPassword, false);
+  assert.equal(user.HasConfiguredPassword, false);
+  assert.equal(user.EnableAutoLogin, true);
+});
+
+test("authenticates an empty Emby login as the local guest", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/Users/AuthenticateByName", {
+      method: "POST",
+    }),
+    {},
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.AccessToken, "bbjavdb-guest");
+  assert.equal(payload.User.Name, "JAVDB Guest");
+  assert.equal(payload.User.HasPassword, false);
+});
+
+test("can disable passwordless Emby guest access", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/emby/Users/AuthenticateByName", {
+      method: "POST",
+    }),
+    { EMBY_GUEST_ACCESS: "false" },
+    {},
+    () => {
+      throw new Error("fetch must not be called");
+    },
+  );
+
+  assert.equal(response.status, 401);
+});
+
 test("maps JavDB movies into an Emby item list", async () => {
   const response = await handleProxy(
     new Request("https://clone.example/Items?ParentId=bbjavdb-root&Limit=10"),
@@ -335,7 +387,7 @@ test("authenticates Emby users against JavDB and returns an access token", async
 
 test("maps full-video resolution into Emby playback info", async () => {
   const response = await handleProxy(
-    new Request("https://clone.example/Items/42/PlaybackInfo?api_key=javdb-token", {
+    new Request("https://clone.example/Items/42/PlaybackInfo", {
       method: "POST",
     }),
     {},
@@ -364,6 +416,7 @@ test("maps full-video resolution into Emby playback info", async () => {
   assert.equal(response.status, 200);
   assert.equal(payload.MediaSources[0].Container, "mp4");
   assert.match(payload.MediaSources[0].Path, /\/Videos\/42\/stream/);
+  assert.match(payload.MediaSources[0].Path, /api_key=bbjavdb-guest/);
 });
 
 test("serves a movie primary image through the Emby endpoint", async () => {
