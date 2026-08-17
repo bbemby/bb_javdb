@@ -8,7 +8,7 @@
     "dev:node": "node scripts/dev-node.mjs",
     "dev:pages": "wrangler pages dev public --compatibility-date=2026-08-16",
     "deploy": "wrangler deploy",
-    "deploy:pages": "wrangler pages deploy public --project-name=catemby-legacy-clone",
+    "deploy:pages": "wrangler pages deploy public --project-name=bbjavdb",
     "test": "node --test"
   },
   "devDependencies": {

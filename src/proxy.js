@@ -24,6 +24,20 @@ const TEXT_CONTENT_TYPES = [
   "text/",
 ];
 
+const MAGNET_COPY_COMPONENT_SOURCE = "function dY({magnet:t})";
+const MAGNET_COPY_COMPONENT_PATCH =
+  'async function bbCopyMagnet(t,n){const e="magnet:?xt=urn:btih:"+t;try{if(navigator.clipboard&&window.isSecureContext)await navigator.clipboard.writeText(e);else{const r=document.createElement("textarea");r.value=e,r.setAttribute("readonly",""),r.style.position="fixed",r.style.opacity="0",document.body.appendChild(r),r.focus(),r.select();try{if(!document.execCommand("copy"))throw new Error("copy failed")}finally{r.remove()}}n.textContent="\u5df2\u590d\u5236"}catch{n.textContent="\u590d\u5236\u5931\u8d25"}setTimeout(()=>{n.isConnected&&(n.textContent="\u590d\u5236")},1500)}function bbCopyButton(t){return f.jsx(Ar,{type:"button",variant:"outline",size:"sm",className:"h-7 shrink-0 px-2 text-xs",title:"\u590d\u5236\u78c1\u529b\u94fe\u63a5","aria-label":"\u590d\u5236\u78c1\u529b\u94fe\u63a5",onClick:n=>bbCopyMagnet(t,n.currentTarget),children:"\u590d\u5236"})}function dY({magnet:t})';
+
+const MAGNET_MOBILE_TITLE_SOURCE =
+  't.downloadUrl?f.jsx("a",{href:t.downloadUrl,target:"_blank",rel:"noreferrer",className:"text-sm font-medium text-primary hover:underline break-all",children:t.name}):f.jsx("span",{className:"text-sm font-medium break-all",children:t.name})';
+const MAGNET_MOBILE_TITLE_PATCH =
+  'f.jsxs("div",{className:"flex items-start gap-2",children:[t.downloadUrl?f.jsx("a",{href:t.downloadUrl,target:"_blank",rel:"noreferrer",className:"min-w-0 flex-1 text-sm font-medium text-primary hover:underline break-all",children:t.name}):f.jsx("span",{className:"min-w-0 flex-1 text-sm font-medium break-all",children:t.name}),bbCopyButton(t.hash)]})';
+
+const MAGNET_DESKTOP_TITLE_SOURCE =
+  'f.jsx(ff,{className:"max-w-md truncate font-medium",children:e.downloadUrl?f.jsx("a",{href:e.downloadUrl,target:"_blank",rel:"noreferrer",className:"text-primary hover:underline",children:e.name}):e.name})';
+const MAGNET_DESKTOP_TITLE_PATCH =
+  'f.jsx(ff,{className:"max-w-md font-medium",children:f.jsxs("div",{className:"flex items-center gap-2",children:[e.downloadUrl?f.jsx("a",{href:e.downloadUrl,target:"_blank",rel:"noreferrer",className:"min-w-0 flex-1 truncate text-primary hover:underline",children:e.name}):f.jsx("span",{className:"min-w-0 flex-1 truncate",children:e.name}),bbCopyButton(e.hash)]})})';
+
 const REPLICA_SOURCE_PATCHES = [
   ["catemby\u9057\u4ea7", "\u6b65\u5175JAVDB"],
   ["--container-7xl:80rem", "--container-7xl:100rem"],
@@ -45,6 +59,9 @@ const REPLICA_SOURCE_PATCHES = [
     "movie_filter_by:r.movieFilterBy,movie_sort_by:r.sortBy,limit:r.limit||32",
   ],
   ["const jx=24,pK=5", "const jx=32,pK=5"],
+  [MAGNET_COPY_COMPONENT_SOURCE, MAGNET_COPY_COMPONENT_PATCH],
+  [MAGNET_MOBILE_TITLE_SOURCE, MAGNET_MOBILE_TITLE_PATCH],
+  [MAGNET_DESKTOP_TITLE_SOURCE, MAGNET_DESKTOP_TITLE_PATCH],
 ];
 
 function normalizeOrigin(value) {

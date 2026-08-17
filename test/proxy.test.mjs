@@ -95,6 +95,23 @@ test("keeps five desktop columns and 32 movies per page", () => {
   assert.doesNotMatch(result, /--container-7xl:80rem/);
 });
 
+test("adds copy controls beside mobile and desktop magnet links", () => {
+  const source = [
+    "function dY({magnet:t})",
+    't.downloadUrl?f.jsx("a",{href:t.downloadUrl,target:"_blank",rel:"noreferrer",className:"text-sm font-medium text-primary hover:underline break-all",children:t.name}):f.jsx("span",{className:"text-sm font-medium break-all",children:t.name})',
+    'f.jsx(ff,{className:"max-w-md truncate font-medium",children:e.downloadUrl?f.jsx("a",{href:e.downloadUrl,target:"_blank",rel:"noreferrer",className:"text-primary hover:underline",children:e.name}):e.name})',
+  ].join("\n");
+
+  const result = applyReplicaOverrides(source);
+
+  assert.match(result, /magnet:\?xt=urn:btih:/);
+  assert.match(result, /navigator\.clipboard/);
+  assert.match(result, /"aria-label":"\u590d\u5236\u78c1\u529b\u94fe\u63a5"/);
+  assert.match(result, /bbCopyButton\(t\.hash\)/);
+  assert.match(result, /bbCopyButton\(e\.hash\)/);
+  assert.doesNotMatch(result, /max-w-md truncate font-medium/);
+});
+
 test("can rewrite external media URLs when explicitly enabled", () => {
   const source = [
     "https://jdforrepam.com/api/v1/movies/latest",

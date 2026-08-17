@@ -136,7 +136,7 @@ npx wrangler login
 npm run deploy:pages
 ```
 
-当前脚本使用项目名 `catemby-legacy-clone`。需要更换名称时，可以修改 `package.json` 中的 `deploy:pages`，或直接执行：
+当前脚本使用项目名 `bbjavdb`。需要更换名称时，可以修改 `package.json` 中的 `deploy:pages`，或直接执行：
 
 ```bash
 npx wrangler pages deploy public --project-name=<YOUR_PAGES_PROJECT>
