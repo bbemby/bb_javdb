@@ -219,7 +219,15 @@ function mediaHostAllowed(hostname, env) {
 
 function safeMediaUrl(value, env) {
   try {
-    const url = new URL(value);
+    const raw = String(value || "").trim();
+    if (!raw || raw.startsWith("data:")) {
+      return null;
+    }
+
+    // Resolver responses have used both absolute and root-relative URLs over
+    // time. Relative media paths are safe because they are pinned to the
+    // configured upstream origin before the host allowlist is checked.
+    const url = new URL(raw, upstreamOrigin(env));
     if (url.protocol !== "https:" && url.protocol !== "http:") {
       return null;
     }
@@ -232,6 +240,41 @@ function safeMediaUrl(value, env) {
   }
 
   return null;
+}
+
+function sourceUrlValue(value) {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object") {
+    return "";
+  }
+  return value.sourceUrl || value.source_url || value.url || value.playUrl ||
+    value.play_url || value.directUrl || value.direct_url || value.file ||
+    value.src || "";
+}
+
+function sourceVariants(payload) {
+  const data = payload?.data || payload;
+  if (Array.isArray(data)) {
+    return data;
+  }
+  const candidates = [
+    data?.variants,
+    data?.sources,
+    data?.videos,
+    data?.streams,
+    data?.data?.variants,
+    data?.data?.sources,
+  ];
+  const list = candidates.find((item) => Array.isArray(item) && item.length > 0) ||
+    candidates.find(Array.isArray);
+  if (list) {
+    return list;
+  }
+
+  // Some resolver versions return one source object instead of an array.
+  return sourceUrlValue(data) ? [data] : [];
 }
 
 function safeMediaContentType(value) {
@@ -770,28 +813,26 @@ async function resolveVideo(movie, env, fetchImpl) {
     env,
     fetchImpl,
   );
-  const data = payload?.data || payload;
-  const variants = Array.isArray(data?.variants)
-    ? data.variants.flatMap((item) => {
-        const sourceUrl = safeMediaUrl(item?.sourceUrl, env);
-        const inlinePlaylist = sourceUrl
-          ? null
-          : decodeInlineHls(item?.sourceUrl);
-        if (!sourceUrl && !inlinePlaylist) {
-          return [];
-        }
-        return [{
-          sourceUrl: sourceUrl?.toString() || "",
-          sourceType: inlinePlaylist
-            ? "application/vnd.apple.mpegurl"
-            : item.sourceType || "video/mp4",
-          inlinePlaylist,
-          variant: item.variant,
-          title: item.title || movie.title || movie.number || code,
-          quality: Number(item.quality || 0),
-        }];
-      })
-    : [];
+  const variants = sourceVariants(payload)
+    .flatMap((item) => {
+      const rawSource = sourceUrlValue(item);
+      const sourceUrl = safeMediaUrl(rawSource, env);
+      const inlinePlaylist = sourceUrl ? null : decodeInlineHls(rawSource);
+      if (!sourceUrl && !inlinePlaylist) {
+        return [];
+      }
+      return [{
+        sourceUrl: sourceUrl?.toString() || "",
+        sourceType: inlinePlaylist
+          ? "application/vnd.apple.mpegurl"
+          : item.sourceType || item.source_type || item.mimeType ||
+            item.mime_type || "video/mp4",
+        inlinePlaylist,
+        variant: item.variant || item.name || item.id,
+        title: item.title || item.name || movie.title || movie.number || code,
+        quality: Number(item.quality || item.height || 0),
+      }];
+    });
   const variant =
     variants.find((item) => item.variant === "original") || variants[0] || null;
   if (!variant) {
@@ -1288,9 +1329,15 @@ async function streamResponse(id, request, env, fetchImpl, token) {
 
   try {
     const requestUrl = new URL(request.url);
-    const suppliedSource = safeMediaUrl(requestUrl.searchParams.get("source"), env);
+    const suppliedSourceValue = ["source", "sourceUrl", "source_url", "url"]
+      .map((name) => requestUrl.searchParams.get(name))
+      .find(Boolean);
+    const suppliedSource = safeMediaUrl(suppliedSourceValue, env);
+    const sourceOrigin = upstreamOrigin(env);
     const requestHeaders = new Headers({
       accept: request.headers.get("accept") || "video/*,*/*;q=0.8",
+      origin: sourceOrigin,
+      referer: `${sourceOrigin}/`,
       "user-agent": "Mozilla/5.0",
     });
     for (const name of ["range", "if-range", "if-none-match", "if-modified-since"]) {
@@ -1454,9 +1501,9 @@ function isHandledPath(path) {
     /^\/Users\/[^/]+\/Views$/i.test(path) ||
     /^\/Users\/[^/]+\/Suggestions$/i.test(path) ||
     /^\/Users\/[^/]+\/Items(?:\/|$)/i.test(path) ||
-    path.startsWith("/Items/") ||
-    path.startsWith("/Videos/") ||
-    path.startsWith("/emby-media/")
+    path.toLowerCase().startsWith("/items/") ||
+    path.toLowerCase().startsWith("/videos/") ||
+    path.toLowerCase().startsWith("/emby-media/")
   );
 }
 
@@ -1707,7 +1754,7 @@ export async function handleEmby(request, env = {}, fetchImpl = fetch) {
   }
 
   const streamMatch = path.match(
-    /^\/Videos\/([^/]+)(?:\/[^/]+)?\/(?:stream|original|download)(?:\.[a-z0-9]+)?$/i,
+    /^\/Videos\/([^/]+)(?:\/[^/]+)?\/(?:stream(?:ing)?|original|download|playback)(?:[._-][^/]*)?$/i,
   );
   if (streamMatch) {
     return streamResponse(

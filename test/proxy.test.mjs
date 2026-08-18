@@ -1073,3 +1073,89 @@ test("refreshes a stale media URL and accepts SenPlayer stream path variants", a
   ]);
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
 });
+
+test("accepts SenPlayer source aliases and sends media hotlink headers", async () => {
+  const videoBytes = new Uint8Array([0, 0, 0, 32]);
+  const source = encodeURIComponent("https://fast-stream.jav.si/video/test.mp4");
+  const response = await handleProxy(
+    new Request(
+      `https://clone.example/emby/videos/42/42/streaming-video.mp4?api_key=bbjavdb-guest&sourceUrl=${source}`,
+      { headers: { range: "bytes=0-3" } },
+    ),
+    {},
+    {},
+    async (url, init = {}) => {
+      assert.equal(String(url), "https://fast-stream.jav.si/video/test.mp4");
+      assert.equal(init.headers.get("range"), "bytes=0-3");
+      assert.equal(init.headers.get("origin"), UPSTREAM);
+      assert.equal(init.headers.get("referer"), `${UPSTREAM}/`);
+      return new Response(videoBytes, {
+        status: 206,
+        headers: {
+          "content-range": "bytes 0-3/4",
+          "content-type": "video/mp4",
+        },
+      });
+    },
+  );
+
+  assert.equal(response.status, 206);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
+});
+
+test("streams relative URLs from alternate resolver response fields", async () => {
+  const videoBytes = new Uint8Array([0, 0, 0, 32]);
+  const calls = [];
+  const response = await handleProxy(
+    new Request(
+      "https://clone.example/Videos/42/playback.mp4?api_key=bbjavdb-guest",
+      { headers: { range: "bytes=0-3" } },
+    ),
+    {},
+    {},
+    async (url, init = {}) => {
+      const target = String(url);
+      calls.push(target);
+      if (target.includes("/v4/movies/42")) {
+        return new Response(
+          JSON.stringify({
+            success: 1,
+            data: { movie: { id: 42, number: "TEST-001" } },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      if (target.includes("/api/v/resolve")) {
+        return new Response(
+          JSON.stringify({
+            data: {
+              sources: [{
+                name: "original",
+                source_url: "/video/fresh.mp4",
+                mime_type: "video/mp4",
+              }],
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
+      }
+      assert.equal(target, `${UPSTREAM}/video/fresh.mp4`);
+      assert.equal(init.headers.get("range"), "bytes=0-3");
+      return new Response(videoBytes, {
+        status: 206,
+        headers: {
+          "content-range": "bytes 0-3/4",
+          "content-type": "video/mp4",
+        },
+      });
+    },
+  );
+
+  assert.equal(response.status, 206);
+  assert.deepEqual(calls, [
+    "https://jdforrepam.com/api/v4/movies/42",
+    `${UPSTREAM}/api/v/resolve?code=TEST-001&lang=zh`,
+    `${UPSTREAM}/video/fresh.mp4`,
+  ]);
+  assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
+});
