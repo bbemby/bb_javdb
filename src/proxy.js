@@ -288,12 +288,82 @@ function forbiddenProxyResponse() {
   });
 }
 
+async function handlePublicApi(request, env = {}, fetchImpl = fetch) {
+  const incoming = new URL(request.url);
+  if (incoming.pathname !== "/api/v/resolve" && incoming.pathname !== "/api/subtitle") {
+    return null;
+  }
+  if (incoming.pathname === "/api/subtitle") {
+    return new Response(JSON.stringify({ error: "Subtitle resolver is unavailable" }), {
+      status: 503,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*",
+      },
+    });
+  }
+  const code = String(incoming.searchParams.get("code") || "").trim();
+  if (!code) {
+    return new Response(JSON.stringify({ error: "Movie code is required" }), {
+      status: 400,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*",
+      },
+    });
+  }
+  const resolverOrigin = String(env.JAVSTRM_ORIGIN || "https://javstrm.emby-59f.workers.dev").replace(/\/$/, "");
+  const target = new URL("/api/resolve", resolverOrigin);
+  target.searchParams.set("code", code);
+  if (incoming.searchParams.get("refresh") === "1") {
+    target.searchParams.set("refresh", "1");
+  }
+  try {
+    const upstream = await fetchImpl(target.toString(), {
+      headers: { accept: "application/json" },
+      redirect: "follow",
+    });
+    const text = await upstream.text();
+    let payload;
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      payload = { error: `Resolver returned non-JSON (${upstream.status})` };
+    }
+    return new Response(JSON.stringify(payload), {
+      status: upstream.ok ? 200 : upstream.status,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*",
+      },
+    });
+  } catch (error) {
+    return new Response(JSON.stringify({
+      error: error instanceof Error ? error.message : "Resolver unavailable",
+    }), {
+      status: 502,
+      headers: {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "access-control-allow-origin": "*",
+      },
+    });
+  }
+}
+
 export async function handleProxy(
   request,
   env = {},
   _context = {},
   fetchImpl = fetch,
 ) {
+  const publicApiResponse = await handlePublicApi(request, env, fetchImpl);
+  if (publicApiResponse) {
+    return publicApiResponse;
+  }
   const embyResponse = await handleEmby(request, env, fetchImpl);
   if (embyResponse) {
     return embyResponse;

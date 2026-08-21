@@ -703,7 +703,7 @@ test("maps full-video resolution into Emby playback info", async () => {
           { headers: { "content-type": "application/json" } },
         );
       }
-      if (url.includes("/api/v/resolve")) {
+      if (url.includes("javstrm.emby-59f.workers.dev/api/resolve")) {
         return new Response(
           JSON.stringify({
             variants: [{ variant: "original", sourceUrl: "https://jdforrepam.com/video/test.mp4", sourceType: "video/mp4" }],
@@ -765,7 +765,7 @@ test("embeds a directly streamable media source in movie details", async () => {
           { headers: { "content-type": "application/json" } },
         );
       }
-      if (url.includes("/api/v/resolve")) {
+      if (url.includes("javstrm.emby-59f.workers.dev/api/resolve")) {
         return new Response(
           JSON.stringify({
             variants: [{
@@ -815,7 +815,7 @@ test("serves inline HLS variants through a short Emby stream URL", async () => {
         { headers: { "content-type": "application/json" } },
       );
     }
-    if (target.includes("/api/v/resolve")) {
+    if (target.includes("javstrm.emby-59f.workers.dev/api/resolve")) {
       return new Response(
         JSON.stringify({
           variants: [{
@@ -957,7 +957,7 @@ test("streams a resolved video and forwards Range headers", async () => {
           { headers: { "content-type": "application/json" } },
         );
       }
-      if (target.includes("/api/v/resolve")) {
+      if (target.includes("javstrm.emby-59f.workers.dev/api/resolve")) {
         return new Response(
           JSON.stringify({
             variants: [{ variant: "original", sourceUrl: "https://fast-stream.jav.si/video/test.mp4", sourceType: "video/mp4" }],
@@ -1040,7 +1040,7 @@ test("refreshes a stale media URL and accepts SenPlayer stream path variants", a
           { headers: { "content-type": "application/json" } },
         );
       }
-      if (target.includes("/api/v/resolve")) {
+      if (target.includes("javstrm.emby-59f.workers.dev/api/resolve")) {
         return new Response(
           JSON.stringify({
             variants: [{
@@ -1068,7 +1068,7 @@ test("refreshes a stale media URL and accepts SenPlayer stream path variants", a
   assert.deepEqual(calls, [
     "https://fast-stream.jav.si/video/stale.mp4",
     "https://jdforrepam.com/api/v4/movies/42",
-    "https://catembylegacy.fastcdn.dpdns.org/api/v/resolve?code=TEST-001&lang=zh",
+    "https://javstrm.emby-59f.workers.dev/api/resolve?code=TEST-001&lang=zh",
     "https://fast-stream.jav.si/video/fresh.mp4",
   ]);
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);
@@ -1125,7 +1125,7 @@ test("streams relative URLs from alternate resolver response fields", async () =
           { headers: { "content-type": "application/json" } },
         );
       }
-      if (target.includes("/api/v/resolve")) {
+      if (target.includes("javstrm.emby-59f.workers.dev/api/resolve")) {
         return new Response(
           JSON.stringify({
             data: {
@@ -1154,7 +1154,7 @@ test("streams relative URLs from alternate resolver response fields", async () =
   assert.equal(response.status, 206);
   assert.deepEqual(calls, [
     "https://jdforrepam.com/api/v4/movies/42",
-    `${UPSTREAM}/api/v/resolve?code=TEST-001&lang=zh`,
+    "https://javstrm.emby-59f.workers.dev/api/resolve?code=TEST-001&lang=zh",
     `${UPSTREAM}/video/fresh.mp4`,
   ]);
   assert.deepEqual(new Uint8Array(await response.arrayBuffer()), videoBytes);

@@ -6,6 +6,7 @@
   "workers_dev": true,
   "vars": {
     "UPSTREAM_ORIGIN": "https://catembylegacy.fastcdn.dpdns.org",
-    "EMBY_GUEST_ACCESS": "true"
+    "EMBY_GUEST_ACCESS": "true",
+    "JAVSTRM_ORIGIN": "https://javstrm.emby-59f.workers.dev"
   }
 }

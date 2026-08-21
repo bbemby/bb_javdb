@@ -1,5 +1,6 @@
 const DEFAULT_API_ORIGIN = "https://jdforrepam.com/api";
 const DEFAULT_UPSTREAM_ORIGIN = "https://catembylegacy.fastcdn.dpdns.org";
+const DEFAULT_RESOLVER_ORIGIN = "https://javstrm.emby-59f.workers.dev";
 const SIGNATURE_KEY = "lpw6vgqzsp";
 const SIGNATURE_SECRET =
   "71cf27bb3c0bcdf207b64abecddc970098c7421ee7203b9cdae54478478a199e7d5a6e1a57691123c1a931c057842fb73ba3b3c83bcd69c17ccf174081e3d8aa";
@@ -202,6 +203,10 @@ function apiOrigin(env) {
 
 function upstreamOrigin(env) {
   return new URL(env.UPSTREAM_ORIGIN || DEFAULT_UPSTREAM_ORIGIN).origin;
+}
+
+function resolverOrigin(env) {
+  return String(env.JAVSTRM_ORIGIN || DEFAULT_RESOLVER_ORIGIN).replace(/\/$/, "");
 }
 
 function mediaHostAllowed(hostname, env) {
@@ -482,6 +487,25 @@ async function upstreamJson(path, env, fetchImpl) {
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(payload.message || payload.error || `Upstream HTTP ${response.status}`);
+  }
+  return payload;
+}
+
+async function resolverJson(path, env, fetchImpl) {
+  const response = await fetchImpl(`${resolverOrigin(env)}${path}`, {
+    headers: { accept: "application/json" },
+    redirect: "follow",
+  });
+  const text = await response.text();
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw new Error(`Resolver returned non-JSON (${response.status})`);
+  }
+  if (!response.ok) {
+    const detail = payload.code ? ` [code=${payload.code}]` : "";
+    throw new Error(`${payload.message || payload.error || `Resolver HTTP ${response.status}`}${detail}`);
   }
   return payload;
 }
@@ -803,13 +827,13 @@ async function getMoviePage(query, env, fetchImpl, token = "") {
 }
 
 async function resolveVideo(movie, env, fetchImpl) {
-  const code = movie.number || movie.code || movie.title;
+  const code = movie.number || movie.code || movie.id || movie.title;
   if (!code) {
     return null;
   }
 
-  const payload = await upstreamJson(
-    `/api/v/resolve?code=${encodeURIComponent(code)}&lang=zh`,
+  const payload = await resolverJson(
+    `/api/resolve?code=${encodeURIComponent(code)}&lang=zh`,
     env,
     fetchImpl,
   );
@@ -851,7 +875,7 @@ function subtitleCodec(subtitle) {
 }
 
 async function resolveSubtitles(movie, env, fetchImpl) {
-  const code = movie.number || movie.code || movie.title;
+  const code = movie.number || movie.code || movie.id || movie.title;
   if (!code) {
     return [];
   }
