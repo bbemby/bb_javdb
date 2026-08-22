@@ -143,8 +143,12 @@ test("includes automatic Emby library status checks in the client asset", async 
   assert.match(script, /bbjb_emby_config/);
   assert.match(script, /IncludeItemTypes:'Movie'/);
   assert.match(script, /Emby已入库/);
+  assert.match(script, /bbjb-emby-test/);
+  assert.match(script, /System\/Info\/Public/);
   assert.match(script, /bbjb-emby-status-row/);
   assert.match(script, /cover\.insertAdjacentElement\('afterend',statusRow\)/);
+  assert.match(script, /a\[href\^="\/movie\/"\]/);
+  assert.match(script, /div\.relative\.overflow-hidden/);
   assert.match(script, /#fee2e2;color:#b91c1c/);
   assert.match(script, /15\*60\*1000/);
 });

@@ -310,6 +310,16 @@ export const BUDDY_CLIENT_SCRIPT = String.raw`(function () {
       .finally(function () { delete embyRequests[key]; });
     return embyRequests[key];
   };
+  var testEmbyConnection = function (url, apiKey, render) {
+    var origin = String(url || '').trim().replace(/\/+$/, '');
+    if (!origin || !apiKey) { render('请填写 Emby 地址和 API Key', false); return; }
+    var query = new URLSearchParams({api_key:String(apiKey)});
+    render('正在连接 Emby…', null);
+    fetch(origin + '/System/Info/Public?' + query, {headers:{accept:'application/json'},credentials:'omit'})
+      .then(function (response) { return response.json().catch(function () { return {}; }).then(function (payload) { if (!response.ok) throw new Error('HTTP '+response.status+(payload.Message?'：'+payload.Message:'')); return payload; }); })
+      .then(function (payload) { render('连接成功'+(payload.ServerName?'：'+payload.ServerName:''), true); })
+      .catch(function (error) { render('连接失败：'+(error.message||'请检查地址、API Key 和 CORS'), false); });
+  };
   var addEmbyStatus = function (host, code) {
     if (!host || host.querySelector('.bbjb-emby-status')) return;
     var badge=document.createElement('span'); badge.className='bbjb-emby-status'; badge.textContent='Emby查询中'; host.appendChild(badge);
@@ -322,13 +332,14 @@ export const BUDDY_CLIENT_SCRIPT = String.raw`(function () {
     });
   };
   var showEmbySettings = function () {
-    var body=modal('Emby 入库查询','<p>保存后会在列表和详情页按番号自动查询。</p><label class="bbjb-field">Emby 地址<input id="bbjb-emby-url" type="url" placeholder="https://emby.example.com"></label><label class="bbjb-field">API Key<input id="bbjb-emby-key" type="password" placeholder="Emby API Key"></label><p class="bbjb-hint">API Key 只保存在当前浏览器。Emby 服务端需要允许当前站点跨域访问（CORS）。</p><button class="bbjb-btn" id="bbjb-emby-save">保存并刷新状态</button><button class="bbjb-btn" id="bbjb-emby-clear">清除配置</button>');
+    var body=modal('Emby 入库查询','<p>保存后会在列表和详情页按番号自动查询。</p><label class="bbjb-field">Emby 地址<input id="bbjb-emby-url" type="url" placeholder="https://emby.example.com"></label><label class="bbjb-field">API Key<input id="bbjb-emby-key" type="password" placeholder="Emby API Key"></label><p class="bbjb-hint">API Key 只保存在当前浏览器。Emby 服务端需要允许当前站点跨域访问（CORS）。</p><div class="bbjb-emby-actions"><button class="bbjb-btn" id="bbjb-emby-test">测试连接</button><button class="bbjb-btn" id="bbjb-emby-save">保存并刷新状态</button><button class="bbjb-btn" id="bbjb-emby-clear">清除配置</button></div><p id="bbjb-emby-test-result" class="bbjb-emby-test-result" aria-live="polite"></p>');
     var config=embyConfig(); body.querySelector('#bbjb-emby-url').value=config.url||''; body.querySelector('#bbjb-emby-key').value=config.apiKey||'';
+    body.querySelector('#bbjb-emby-test').addEventListener('click',function () { var result=body.querySelector('#bbjb-emby-test-result'); testEmbyConnection(body.querySelector('#bbjb-emby-url').value,body.querySelector('#bbjb-emby-key').value,function (message,success) { result.textContent=message; result.className='bbjb-emby-test-result '+(success===true?'is-success':success===false?'is-error':'is-loading'); }); });
     body.querySelector('#bbjb-emby-save').addEventListener('click',function () { var url=body.querySelector('#bbjb-emby-url').value.trim().replace(/\/+$/,''); var apiKey=body.querySelector('#bbjb-emby-key').value.trim(); if (!url || !apiKey) { alert('请填写 Emby 地址和 API Key'); return; } try { var parsed=new URL(url); if (!/^https?:$/.test(parsed.protocol)) throw new Error('bad protocol'); localStorage.setItem('bbjb_emby_config',JSON.stringify({url:parsed.origin+parsed.pathname.replace(/\/+$/,''),apiKey:apiKey})); Object.keys(embyCache).forEach(function (key) { delete embyCache[key]; }); document.querySelectorAll('.bbjb-emby-status').forEach(function (node) { node.remove(); }); body.closest('.bbjb-modal').remove(); run(); } catch (_) { alert('Emby 地址必须是 http 或 https URL'); } });
     body.querySelector('#bbjb-emby-clear').addEventListener('click',function () { localStorage.removeItem('bbjb_emby_config'); Object.keys(embyCache).forEach(function (key) { delete embyCache[key]; }); document.querySelectorAll('.bbjb-emby-status').forEach(function (node) { node.remove(); }); body.closest('.bbjb-modal').remove(); run(); });
   };
   var css = document.createElement('style');
-  css.textContent = '.bbjb-tools{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.bbjb-btn{border:1px solid #c9d4e1;background:#fff;color:#26547c;border-radius:4px;padding:4px 9px;font-size:12px;cursor:pointer}.bbjb-btn:hover{background:#eef6ff}.bbjb-panel{background:#fff;border:1px solid #e5e7eb;padding:12px;margin-top:10px}.bbjb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}.bbjb-grid img{width:100%;aspect-ratio:2/3;object-fit:cover;cursor:zoom-in}.bbjb-modal{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:2147483647;padding:5vh 5vw;overflow:auto}.bbjb-modal-inner{max-width:1100px;margin:auto;background:#fff;color:#222;padding:18px;border-radius:6px}.bbjb-modal-close{float:right;border:0;background:transparent;font-size:24px;cursor:pointer}.bbjb-row{border-top:1px solid #eee;padding:10px 0}.bbjb-field{display:block;margin:10px 0;font-size:13px}.bbjb-field input{display:block;box-sizing:border-box;width:100%;margin-top:5px;padding:8px;border:1px solid #c9d4e1;border-radius:4px}.bbjb-hint{font-size:12px;color:#6b7280}.bbjb-emby-status-row{display:block;min-height:19px;margin:5px 0 2px}.bbjb-emby-status{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;line-height:1.3;white-space:nowrap}.bbjb-emby-found{background:#dcfce7;color:#166534;cursor:pointer}.bbjb-emby-missing{background:#fee2e2;color:#b91c1c}.bbjb-emby-error{background:#fef3c7;color:#92400e;cursor:pointer}.bbjb-nav{position:fixed;right:14px;top:48%;z-index:1000;display:grid;gap:5px}.bbjb-nav button{width:32px;height:32px;border:0;border-radius:50%;background:#2d6cdf;color:#fff;cursor:pointer}.bbjb-special{margin:12px 0}.bbjb-special .box{height:100%}';
+  css.textContent = '.bbjb-tools{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}.bbjb-btn{border:1px solid #c9d4e1;background:#fff;color:#26547c;border-radius:4px;padding:4px 9px;font-size:12px;cursor:pointer}.bbjb-btn:hover{background:#eef6ff}.bbjb-panel{background:#fff;border:1px solid #e5e7eb;padding:12px;margin-top:10px}.bbjb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}.bbjb-grid img{width:100%;aspect-ratio:2/3;object-fit:cover;cursor:zoom-in}.bbjb-modal{position:fixed;inset:0;background:rgba(0,0,0,.82);z-index:2147483647;padding:5vh 5vw;overflow:auto}.bbjb-modal-inner{max-width:1100px;margin:auto;background:#fff;color:#222;padding:18px;border-radius:6px}.bbjb-modal-close{float:right;border:0;background:transparent;font-size:24px;cursor:pointer}.bbjb-row{border-top:1px solid #eee;padding:10px 0}.bbjb-field{display:block;margin:10px 0;font-size:13px}.bbjb-field input{display:block;box-sizing:border-box;width:100%;margin-top:5px;padding:8px;border:1px solid #c9d4e1;border-radius:4px}.bbjb-hint{font-size:12px;color:#6b7280}.bbjb-emby-actions{display:flex;flex-wrap:wrap;gap:8px}.bbjb-emby-test-result{min-height:20px;margin:8px 0 0;font-size:13px}.bbjb-emby-test-result.is-success{color:#15803d}.bbjb-emby-test-result.is-error{color:#b91c1c}.bbjb-emby-test-result.is-loading{color:#64748b}.bbjb-emby-status-row{display:block;min-height:19px;margin:5px 0 2px}.bbjb-emby-status{display:inline-block;padding:3px 8px;border-radius:4px;font-size:11px;line-height:1.3;white-space:nowrap}.bbjb-emby-found{background:#dcfce7;color:#166534;cursor:pointer}.bbjb-emby-missing{background:#fee2e2;color:#b91c1c}.bbjb-emby-error{background:#fef3c7;color:#92400e;cursor:pointer}.bbjb-nav{position:fixed;right:14px;top:48%;z-index:1000;display:grid;gap:5px}.bbjb-nav button{width:32px;height:32px;border:0;border-radius:50%;background:#2d6cdf;color:#fff;cursor:pointer}.bbjb-special{margin:12px 0}.bbjb-special .box{height:100%}';
   (document.head || document.documentElement).appendChild(css);
   var button = function (label, handler) { var el = document.createElement('button'); el.className='bbjb-btn'; el.type='button'; el.textContent=label; el.addEventListener('click', handler); return el; };
   var modal = function (title, content) {
@@ -345,7 +356,7 @@ export const BUDDY_CLIENT_SCRIPT = String.raw`(function () {
     return '<div class="bbjb-grid">' + (movies || []).map(function(movie){
       var id = movie.id || movie.uuid || ''; var cover = movie.cover_url || movie.cover || '';
       var code = movie.number || movie.code || ''; var title = movie.origin_title || movie.title || '';
-      return '<a class="box item" href="/v/'+encodeURIComponent(id)+'"><div class="cover">'+(cover?'<img loading="lazy" src="'+esc(cover)+'">':'')+'</div><div class="video-title"><strong>'+esc(code)+'</strong> '+esc(title)+'</div><div class="meta">'+esc(movie.release_date || '')+'</div></a>';
+      return '<a class="box item" href="/movie/'+encodeURIComponent(id)+'"><div class="cover">'+(cover?'<img loading="lazy" src="'+esc(cover)+'">':'')+'</div><div class="video-title"><strong>'+esc(code)+'</strong> '+esc(title)+'</div><div class="meta">'+esc(movie.release_date || '')+'</div></a>';
     }).join('') + '</div>';
   };
   var specialPage = function () {
@@ -365,7 +376,7 @@ export const BUDDY_CLIENT_SCRIPT = String.raw`(function () {
     load().then(render).catch(showError);
   };
   var detailPage = function () {
-    if (!/^\/v\//.test(location.pathname)) return;
+    if (!/^\/(?:v|movie)\//.test(location.pathname)) return;
     var id = decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || '');
     var blocks = document.querySelectorAll('.video-meta-panel .panel-block,.movie-panel-info .panel-block,.panel-block'); var code=''; var target=null;
     Array.prototype.some.call(blocks,function(block){var strong=block.querySelector('strong'); if(strong && /番.?[号號]|number/i.test(strong.textContent)){code=codeFrom((block.querySelector('.value')||block).textContent);target=block;return true;} return false;});
@@ -383,17 +394,17 @@ export const BUDDY_CLIENT_SCRIPT = String.raw`(function () {
     target.appendChild(tools);
   };
   var listPage = function () {
-    if (/^\/v\//.test(location.pathname)) return;
-    Array.prototype.forEach.call(document.querySelectorAll('.grid-item,.movie-list .item'), function (item) {
+    if (/^\/(?:v|movie)\//.test(location.pathname)) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.grid-item,.movie-list .item,a[href^="/movie/"]'), function (item) {
       if (item.dataset.bbjbTools) return;
-      var link = item.querySelector('a[href^="/v/"]') || (item.matches('a[href^="/v/"]') ? item : null);
+      var link = item.querySelector('a[href^="/v/"],a[href^="/movie/"]') || (item.matches('a[href^="/v/"],a[href^="/movie/"]') ? item : null);
       if (!link) return;
       var id = decodeURIComponent(link.getAttribute('href').split('/').filter(Boolean).pop() || '');
       var code = codeFrom(item.textContent);
       if (!id || !code) return;
       var host = item.querySelector('.tags') || item;
       var tools = document.createElement('div'); tools.className='bbjb-tools';
-      var cover = item.querySelector('.cover');
+      var cover = item.querySelector('.cover,div.relative.overflow-hidden') || (item.querySelector('img') && item.querySelector('img').parentElement);
       if (cover) {
         var statusRow = document.createElement('div'); statusRow.className='bbjb-emby-status-row';
         addEmbyStatus(statusRow,code);
