@@ -1,6 +1,7 @@
 import { javdbRequest } from "./emby.js";
 
 const BUDDY_ASSET_PATH = "/__bbjavdb/buddy.js";
+const BUDDY_ASSET_VERSION = "2026-08-22-3";
 const JAVBUS_ORIGIN = "https://www.javbus.com";
 const SUBTITLECAT_ORIGIN = "https://www.subtitlecat.com";
 const BUDDY_CODE_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{1,119}$/;
@@ -265,7 +266,7 @@ export async function handleBuddyRoute(request, env = {}, fetchImpl = fetch) {
 
 export function injectBuddyScript(body, publicOrigin) {
   if (!/<html\b/i.test(body) || /data-bbjavdb-buddy/i.test(body)) return body;
-  const tag = `<script data-bbjavdb-buddy src="${publicOrigin}${BUDDY_ASSET_PATH}"></script>`;
+  const tag = `<script data-bbjavdb-buddy src="${publicOrigin}${BUDDY_ASSET_PATH}?v=${BUDDY_ASSET_VERSION}"></script>`;
   return /<\/body>/i.test(body)
     ? body.replace(/<\/body>/i, `${tag}</body>`)
     : `${body}${tag}`;
