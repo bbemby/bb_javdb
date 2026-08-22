@@ -443,7 +443,7 @@ function virtualUser(env = {}, name = "JAVDB Guest", hasPassword = false) {
   };
 }
 
-async function javdbRequest(path, env, fetchImpl, options = {}) {
+export async function javdbRequest(path, env, fetchImpl, options = {}) {
   const url = new URL(`${apiOrigin(env)}${path}`);
   if (options.query) {
     Object.entries(options.query).forEach(([key, value]) => {

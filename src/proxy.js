@@ -1,4 +1,5 @@
 import { handleEmby } from "./emby.js";
+import { handleBuddyRoute, injectBuddyScript } from "./buddy.js";
 
 export const DEFAULT_UPSTREAM_ORIGIN =
   "https://catembylegacy.fastcdn.dpdns.org";
@@ -360,6 +361,11 @@ export async function handleProxy(
   _context = {},
   fetchImpl = fetch,
 ) {
+  const buddyResponse = await handleBuddyRoute(request, env, fetchImpl);
+  if (buddyResponse) {
+    return buddyResponse;
+  }
+
   const publicApiResponse = await handlePublicApi(request, env, fetchImpl);
   if (publicApiResponse) {
     return publicApiResponse;
@@ -421,12 +427,16 @@ export async function handleProxy(
   }
 
   const text = await upstreamResponse.text();
-  const body = rewriteText(
+  let body = rewriteText(
     text,
     publicOrigin,
     target.upstreamOrigin,
     env,
   );
+
+  if ((responseHeaders.get("content-type") || "").toLowerCase().includes("text/html")) {
+    body = injectBuddyScript(body, publicOrigin);
+  }
 
   responseHeaders.delete("content-encoding");
   responseHeaders.delete("content-length");

@@ -114,6 +114,131 @@ test("adds copy controls beside mobile and desktop magnet links", () => {
   assert.doesNotMatch(result, /max-w-md truncate font-medium/);
 });
 
+test("serves the injected JavdbBuddy client asset", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/__bbjavdb/buddy.js"),
+    {},
+    {},
+    () => {
+      throw new Error("asset must not be proxied upstream");
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("content-type"), /javascript/);
+  assert.match(await response.text(), /api\/jb\/reviews/);
+});
+
+test("includes automatic Emby library status checks in the client asset", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/__bbjavdb/buddy.js"),
+    {},
+    {},
+    () => {
+      throw new Error("asset must not be proxied upstream");
+    },
+  );
+
+  const script = await response.text();
+  assert.match(script, /bbjb_emby_config/);
+  assert.match(script, /IncludeItemTypes:'Movie'/);
+  assert.match(script, /Emby已入库/);
+  assert.match(script, /15\*60\*1000/);
+});
+
+test("injects the same-origin JavdbBuddy asset into HTML once", async () => {
+  const response = await handleProxy(
+    new Request("https://clone.example/"),
+    {},
+    {},
+    async () => new Response(
+      "<html><body><main>JAVDB</main></body></html>",
+      { headers: { "content-type": "text/html; charset=utf-8" } },
+    ),
+  );
+
+  const body = await response.text();
+  assert.equal((body.match(/data-bbjavdb-buddy/g) || []).length, 1);
+  assert.match(body, /https:\/\/clone\.example\/__bbjavdb\/buddy\.js/);
+});
+
+test("proxies JavdbBuddy review requests with the server signature", async () => {
+  let received;
+  const response = await handleProxy(
+    new Request("https://clone.example/api/jb/reviews/42?page=2&limit=20"),
+    {},
+    {},
+    async (url, init) => {
+      received = { url, signature: init.headers.get("jdsignature") };
+      return new Response(
+        JSON.stringify({ success: 1, data: { reviews: [{ content: "很好" }] } }),
+        { headers: { "content-type": "application/json" } },
+      );
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.match(received.url, /\/v1\/movies\/42\/reviews\?page=2&sort_by=hotly&limit=20/);
+  assert.match(received.signature, /^\d+\.lpw6vgqzsp\.[a-f0-9]{32}$/);
+  assert.deepEqual(await response.json(), { data: { reviews: [{ content: "很好" }] } });
+});
+
+test("proxies JavdbBuddy subtitle searches and keeps Chinese matches", async () => {
+  let requested;
+  const response = await handleProxy(
+    new Request("https://clone.example/api/jb/subtitles?code=TEST-001"),
+    {},
+    {},
+    async (url) => {
+      requested = url;
+      return new Response(
+        '<table><tr><td><a href="/subtitle/1">TEST-001 Chinese</a></td><td>1 MB</td><td>12</td><td>Chinese</td></tr><tr><td><a href="/subtitle/2">TEST-001 English</a></td><td>1 MB</td><td>4</td><td>English</td></tr></table>',
+        { headers: { "content-type": "text/html" } },
+      );
+    },
+  );
+
+  assert.match(requested, /subtitlecat\.com\/index\.php\?search=TEST-001/);
+  assert.deepEqual(await response.json(), {
+    code: "TEST-001",
+    subtitles: [{
+      name: "TEST-001 Chinese",
+      url: "https://www.subtitlecat.com/subtitle/1",
+      size: "1 MB",
+      downloads: "12",
+      languages: "Chinese",
+    }],
+    status: 200,
+  });
+});
+
+test("resolves JAVBUS magnet metadata through the same-origin route", async () => {
+  const calls = [];
+  const response = await handleProxy(
+    new Request("https://clone.example/api/jb/javbus?code=TEST-001"),
+    {},
+    {},
+    async (url) => {
+      calls.push(url);
+      if (calls.length === 1) {
+        return new Response("<script>var gid = 12; var uc = 34; var img = 'cover.jpg';</script>", {
+          headers: { "content-type": "text/html" },
+        });
+      }
+      return new Response(
+        '<tr><td><a href="magnet:?xt=urn:btih:abc">TEST-001 字幕 高清</a></td><td>2 GB</td><td>2026-01-01</td></tr>',
+        { headers: { "content-type": "text/html" } },
+      );
+    },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(calls.length, 2);
+  assert.match(calls[1], /gid=12/);
+  assert.match(calls[1], /uc=34/);
+  assert.equal((await response.json()).magnets[0].hasSub, true);
+});
+
 test("can rewrite external media URLs when explicitly enabled", () => {
   const source = [
     "https://jdforrepam.com/api/v1/movies/latest",

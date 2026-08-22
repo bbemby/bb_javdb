@@ -9,6 +9,7 @@
 - 宽屏桌面端每行显示 5 张大封面卡片。
 - 影片列表默认请求 32 条数据。
 - 保留搜索、筛选、详情页、登录请求、封面显示和视频播放等上游功能。
+- 自动注入 `JavdbBuddy` 增强层：超级功能导航、热播/Top250/FC2 页面、详情页预览图与演员、全部评论、相关清单、JAVBUS 磁力、中文字幕搜索、多站点快捷搜索、Emby 入库状态和返回顶部/底部按钮。
 
 > [!IMPORTANT]
 > 本项目仅供学习 Cloudflare Workers、Pages Functions 和流式反向代理技术。部署前请确认你有权代理上游内容，并遵守 Cloudflare 服务条款、上游站点规则及当地法律。项目作者不提供上游内容、账号或可用性保证。
@@ -33,6 +34,24 @@
 - `Range` 请求与 `206 Partial Content` 视频响应透传。
 - MP4、HLS 播放列表、AES-128 密钥和视频分片流式传输。
 - 媒体代理域名白名单，阻止把部署实例用作任意开放代理。
+
+## JavdbBuddy 增强层
+
+HTML 页面会自动加载同源的 `/__bbjavdb/buddy.js`。浏览器不需要安装 Tampermonkey，也不会要求授予跨域脚本权限。增强层使用以下同源路由访问外部数据：
+
+| 路由 | 用途 |
+| --- | --- |
+| `/api/jb/playback` | 热播数据 |
+| `/api/jb/top` | Top250 数据 |
+| `/api/jb/movie/<id>` | 预览图和演员 |
+| `/api/jb/reviews/<id>` | 全部评论 |
+| `/api/jb/related/<id>` | 相关清单 |
+| `/api/jb/javbus?code=<番号>` | JAVBUS 磁力链 |
+| `/api/jb/subtitles?code=<番号>` | SubtitleCat 中文字幕搜索 |
+
+JavDB API 请求由 Worker 生成 `jdsignature`，因此不需要把签名密钥交给浏览器。Top250 的登录态仍然是可选的上游能力；页面只会在你主动粘贴 Token 后将其保存在当前浏览器的 `localStorage`，Worker 不会保存账号、密码或 Token。JAVBUS 和 SubtitleCat 的页面结构或反爬策略变化时，对应按钮可能显示暂无数据，但不会影响主站浏览和 Emby 播放。
+
+点击页面右侧的齿轮按钮可以配置 Emby 地址和 API Key。配置保存在当前浏览器，页面会按番号自动调用 `Items` 接口，显示“Emby 已入库/未入库”，并允许点击已入库状态直接打开 Emby 条目；状态缓存每 15 分钟自动刷新。由于查询从浏览器直接发往你的 Emby 服务，Emby 服务端需要允许当前 `bbjavdb` 域名的 CORS 请求。
 
 目标 API、封面和 HLS 地址默认保持直连。目标 API 会根据原始 API 域名生成 `jdsignature`，因此不要随意开启外部媒体地址改写。
 
@@ -271,6 +290,7 @@ npm test
 |-- src/
 |   |-- proxy.js          # 核心代理、改写和安全策略
 |   |-- emby.js           # Emby 兼容接口、元数据映射和视频转发
+|   |-- buddy.js          # JavdbBuddy 同源 API 路由与页面增强脚本
 |   `-- worker.js         # 独立 Worker 入口
 |-- test/
 |   `-- proxy.test.mjs    # Node 单元测试
